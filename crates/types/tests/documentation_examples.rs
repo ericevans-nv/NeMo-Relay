@@ -63,3 +63,22 @@ mod framework_response_codec {
         assert!(matches!(result, Err(FlowError::Internal(_))));
     }
 }
+
+#[test]
+fn documentation_resource_metrics_snapshot_matches_the_public_schema() {
+    use nemo_relay_types::api::resource_metrics::ResourceMetricsSnapshot;
+    let page = include_str!("../../../docs/reference/api/resource-metrics.mdx");
+    let example = page
+        .split("```json title=\"Illustrative snapshot\"\n")
+        .nth(1)
+        .unwrap()
+        .split("\n```")
+        .next()
+        .unwrap();
+    let expected: serde_json::Value = serde_json::from_str(example).unwrap();
+    let snapshot: ResourceMetricsSnapshot = serde_json::from_str(example).unwrap();
+    assert_eq!(serde_json::to_value(&snapshot).unwrap(), expected);
+    assert_eq!(snapshot.measurement_scope.as_str(), "process_tree");
+    assert!(snapshot.cpu.unwrap().consumption_rate.is_none());
+    assert!(snapshot.memory.is_none());
+}
