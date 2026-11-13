@@ -1958,12 +1958,13 @@ test-openclaw:
     #!/usr/bin/env bash
     {{ bash_helpers }}
     cd "$NEMO_RELAY_REPO_ROOT"
+    export NEMO_RELAY_TEST_SKIP_IMPLICIT_CONFIG=1
     if is_true "{{ ci }}"; then
         npm ci --ignore-scripts
-        npm run build-debug --workspace=nemo-relay-node
     else
         npm install --ignore-scripts
     fi
+    npm run build-debug --workspace=nemo-relay-node -- --features __skip-implicit-config
     npm run typecheck --workspace=nemo-relay-openclaw
     npm test --workspace=nemo-relay-openclaw
     npm run test:live --workspace=nemo-relay-openclaw
