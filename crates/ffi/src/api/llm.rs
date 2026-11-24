@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use super::tool_lifecycle::parse_application_context;
 use super::{
     Arc, FfiCodecHandle, FfiLLMHandle, FfiLLMRequest, FfiLlmSanitizeRequestCodec,
     FfiLlmSanitizeResponseCodec, FfiScopeHandle, FlowResult, LlmAttributes, LlmExecutionNextFn,
@@ -468,6 +469,10 @@ fn parse_execute_inputs(raw: RawExecuteInputs) -> Result<ParsedExecuteInputs, Ne
 ///   middleware stages. Unknown bits return `InvalidArg`. Event sanitization,
 ///   codecs, trace context, and completion still run.
 ///
+/// `execution_context_json` is a readable NUL-terminated application envelope
+/// within 16 KiB and 64 container levels, or null to omit it. It is available
+/// only to execution interceptors.
+///
 /// Relay owns callback data when the call starts. It releases the data even if validation fails.
 ///
 /// # Safety
@@ -491,6 +496,7 @@ pub unsafe extern "C" fn nemo_relay_llm_call_execute(
     request_codec: *const FfiCodecHandle,
     response_codec: *const FfiCodecHandle,
     skip_stages: u32,
+    execution_context_json: *const c_char,
     cancellation: *const super::FfiCancellation,
     out: *mut *mut c_char,
 ) -> NemoRelayStatus {
@@ -542,6 +548,10 @@ pub unsafe extern "C" fn nemo_relay_llm_call_execute(
         set_last_error("null pointer argument");
         return NemoRelayStatus::NullPointer;
     }
+    let application_execution_context = match parse_application_context(execution_context_json) {
+        Ok(context) => context,
+        Err(status) => return status,
+    };
     let parsed = match parse_execute_inputs(RawExecuteInputs {
         name,
         native_json,
@@ -563,7 +573,7 @@ pub unsafe extern "C" fn nemo_relay_llm_call_execute(
     let signal = cancellation;
     let result = super::block_on(async move {
         super::cancellation::run(signal, async move {
-            core_llm_api::llm_call_execute(
+            core_llm_api::llm_call_execute_with_context(
                 core_llm_api::LlmCallExecuteParams::builder()
                     .name(parsed.name)
                     .request(parsed.request)
@@ -577,6 +587,7 @@ pub unsafe extern "C" fn nemo_relay_llm_call_execute(
                     .codec_opt(parsed.codec)
                     .response_codec_opt(parsed.response_codec)
                     .build(),
+                application_execution_context,
             )
             .await
         })
@@ -737,6 +748,10 @@ async fn forward_stream_to_channel(
 ///   middleware stages. Unknown bits return `InvalidArg`. Event sanitization,
 ///   codecs, trace context, and completion still run.
 ///
+/// `execution_context_json` is a readable NUL-terminated application envelope
+/// within 16 KiB and 64 container levels, or null to omit it. It is available
+/// only to execution interceptors.
+///
 /// Relay owns callback data when the call starts. It releases the data even if validation fails.
 ///
 /// # Safety
@@ -766,6 +781,7 @@ pub unsafe extern "C" fn nemo_relay_llm_stream_call_execute(
     request_codec: *const FfiCodecHandle,
     response_codec: *const FfiCodecHandle,
     skip_stages: u32,
+    execution_context_json: *const c_char,
     cancellation: *const super::FfiCancellation,
     out: *mut *mut FfiStream,
 ) -> NemoRelayStatus {
@@ -837,6 +853,10 @@ pub unsafe extern "C" fn nemo_relay_llm_stream_call_execute(
         set_last_error("null pointer argument");
         return NemoRelayStatus::NullPointer;
     }
+    let application_execution_context = match parse_application_context(execution_context_json) {
+        Ok(context) => context,
+        Err(status) => return status,
+    };
     let parsed = match parse_execute_inputs(RawExecuteInputs {
         name,
         native_json,
@@ -860,7 +880,7 @@ pub unsafe extern "C" fn nemo_relay_llm_stream_call_execute(
         callbacks.clone(),
         async move {
             super::cancellation::run(signal, async move {
-                core_llm_api::llm_stream_call_execute(
+                core_llm_api::llm_stream_call_execute_with_context(
                     core_llm_api::LlmStreamCallExecuteParams::builder()
                         .name(parsed.name)
                         .request(parsed.request)
@@ -876,6 +896,7 @@ pub unsafe extern "C" fn nemo_relay_llm_stream_call_execute(
                         .codec_opt(parsed.codec)
                         .response_codec_opt(parsed.response_codec)
                         .build(),
+                    application_execution_context,
                 )
                 .await
             })

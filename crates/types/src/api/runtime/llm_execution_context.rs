@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Invocation-scoped codec context for LLM execution intercepts.
+//! Invocation-scoped context for LLM execution intercepts.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -9,6 +9,7 @@ use std::sync::{Arc, Weak};
 use super::callbacks::{LlmRequestContext, LlmResponseContext};
 use crate::Json;
 use crate::api::llm::LlmRequest;
+use crate::api::tool::ApplicationExecutionContext;
 use crate::codec::request::AnnotatedLlmRequest;
 use crate::codec::response::AnnotatedLlmResponse;
 use crate::codec::traits::{LlmCodec, LlmResponseCodec};
@@ -109,7 +110,7 @@ impl LlmResponseCodec for RevocableResponseCodec {
     }
 }
 
-/// Codec access for one LLM execution.
+/// Codec access and optional application context for one LLM execution.
 ///
 /// Request codec information is always present. Response codec access is
 /// available only for non-streaming calls because response codecs expect a
@@ -125,6 +126,7 @@ impl LlmResponseCodec for RevocableResponseCodec {
 pub struct LlmExecutionContext {
     request_codec: LlmRequestContext,
     response_codec: Option<LlmResponseContext>,
+    application_execution_context: Option<Arc<ApplicationExecutionContext>>,
 }
 
 impl LlmExecutionContext {
@@ -137,7 +139,19 @@ impl LlmExecutionContext {
         Self {
             request_codec,
             response_codec,
+            application_execution_context: None,
         }
+    }
+
+    /// Attach the validated application context before building the execution chain.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_application_execution_context(
+        mut self,
+        application_execution_context: Option<ApplicationExecutionContext>,
+    ) -> Self {
+        self.application_execution_context = application_execution_context.map(Arc::new);
+        self
     }
 
     /// Construct the context for a non-streaming managed execution.
@@ -197,7 +211,11 @@ impl LlmExecutionContext {
                 });
 
         (
-            Self::new(request_codec, response_codec),
+            Self {
+                request_codec,
+                response_codec,
+                application_execution_context: self.application_execution_context.clone(),
+            },
             LlmExecutionCodecLeaseGuard {
                 gate,
                 request_codec: leased_request_codec,
@@ -219,6 +237,14 @@ impl LlmExecutionContext {
     #[must_use]
     pub fn response_codec(&self) -> Option<&LlmResponseContext> {
         self.response_codec.as_ref()
+    }
+
+    /// Return application data supplied for this call, if present.
+    ///
+    /// The context is separate from the provider request and grants no authority.
+    #[must_use]
+    pub fn execution_context(&self) -> Option<&ApplicationExecutionContext> {
+        self.application_execution_context.as_deref()
     }
 }
 

@@ -313,7 +313,7 @@ class WorkerResponseCodec:
 
 @dataclass(frozen=True)
 class LlmExecutionContext:
-    """Directional codec context for one LLM execution invocation.
+    """Directional codec access and application context for one LLM execution.
 
     The identities describe the codecs selected when Relay created the managed
     invocation. Rewriting a request into another provider's wire format does
@@ -322,6 +322,16 @@ class LlmExecutionContext:
 
     request_codec: LlmRequestContext
     response_codec: LlmResponseContext | None
+    execution_context: ApplicationExecutionContext | None = field(default=None, repr=False, kw_only=True)
+
+    def __post_init__(self) -> None:
+        supplied = object.__getattribute__(self, "execution_context")
+        snapshot = _validate_application_execution_context(supplied) if supplied is not None else None
+        object.__setattr__(self, "execution_context", snapshot)
+
+    def __getattribute__(self, name: str) -> Any:
+        value = object.__getattribute__(self, name)
+        return copy.deepcopy(value) if name == "execution_context" else value
 
 
 def _codec_identity(codec: Any) -> LlmCodecIdentity:
@@ -366,6 +376,11 @@ def _llm_execution_context(
     return LlmExecutionContext(
         request_codec=request_context,
         response_codec=response_context,
+        execution_context=(
+            _application_execution_context_from_proto(invocation.execution_context)
+            if invocation.HasField("execution_context")
+            else None
+        ),
     )
 
 
@@ -940,11 +955,11 @@ def _validate_application_execution_context(value: object) -> ApplicationExecuti
         nonlocal remaining_bytes
         remaining_bytes -= amount
         if remaining_bytes < 0:
-            raise WorkerSdkError("tool execution context exceeds 16384 serialized bytes")
+            raise WorkerSdkError("application execution context exceeds 16384 serialized bytes")
 
     def encoded_string(text: str) -> str:
         if len(text) > remaining_bytes:
-            raise WorkerSdkError("tool execution context exceeds 16384 serialized bytes")
+            raise WorkerSdkError("application execution context exceeds 16384 serialized bytes")
         try:
             charge(len(json.dumps(text, ensure_ascii=False).encode("utf-8")))
         except UnicodeError as error:
@@ -955,10 +970,10 @@ def _validate_application_execution_context(value: object) -> ApplicationExecuti
         if isinstance(item, (dict, list)):
             depth = parent_depth + 1
             if depth > 64:
-                raise WorkerSdkError("tool execution context exceeds 64 container levels")
+                raise WorkerSdkError("application execution context exceeds 64 container levels")
             charge(2)
             if len(item) > remaining_bytes + 1:
-                raise WorkerSdkError("tool execution context exceeds 16384 serialized bytes")
+                raise WorkerSdkError("application execution context exceeds 16384 serialized bytes")
             if isinstance(item, dict):
                 result = {}
                 for index, (key, child) in enumerate(item.items()):
@@ -983,7 +998,7 @@ def _validate_application_execution_context(value: object) -> ApplicationExecuti
             return item
         if isinstance(item, int):
             if (int.bit_length(item) + 3) // 4 > remaining_bytes:
-                raise WorkerSdkError("tool execution context exceeds 16384 serialized bytes")
+                raise WorkerSdkError("application execution context exceeds 16384 serialized bytes")
             number = int.__int__(item)
             try:
                 charge(len(str(number)))
@@ -1011,7 +1026,7 @@ def _validate_application_execution_context(value: object) -> ApplicationExecuti
         raise WorkerSdkError("invalid application execution context")
 
     if not isinstance(value, dict):
-        raise WorkerSdkError("tool execution context must be an object")
+        raise WorkerSdkError("application execution context must be an object")
     copied = snapshot(value, 0)
     if any(key != "data" for key in copied) or ("data" in copied and not isinstance(copied["data"], dict)):
         raise WorkerSdkError("invalid application execution context")
@@ -1021,7 +1036,7 @@ def _validate_application_execution_context(value: object) -> ApplicationExecuti
 def _application_execution_context_from_proto(value: Any) -> ApplicationExecutionContext:
     """Decode Relay's concrete context without interpreting application data."""
     if value.HasField("data"):
-        return {"data": _decode_payload(value.data, "tool execution context data")}
+        return {"data": _decode_payload(value.data, "application execution context data")}
     return {}
 
 

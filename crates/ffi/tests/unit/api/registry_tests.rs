@@ -2888,6 +2888,7 @@ fn test_ffi_duplicate_registration_sweep_and_helper_callbacks() {
                     codec: ptr::null(),
                 },
                 response_codec: ptr::null(),
+                execution_context_json: ptr::null(),
             },
             llm_next_passthrough,
             ptr::null_mut(),
@@ -3329,6 +3330,7 @@ fn test_ffi_llm_execute_stream_and_atif_exporter() {
                 std::ptr::null(),
                 ptr::null(),
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut execute_out
             ),
@@ -3366,6 +3368,7 @@ fn test_ffi_llm_execute_stream_and_atif_exporter() {
                 std::ptr::null(),
                 ptr::null(),
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut stream
             ),

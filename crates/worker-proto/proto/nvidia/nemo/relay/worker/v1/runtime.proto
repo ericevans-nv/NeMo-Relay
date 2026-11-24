@@ -223,6 +223,9 @@ message LlmExecutionInvocation {
   LlmCodecContext request_codec = 4 [(buf.validate.field).required = true];
   // Required unary response codec context; streaming execution does not carry this field.
   LlmCodecContext response_codec = 5 [(buf.validate.field).required = true];
+  // Optional application context for this invocation, separate from the provider request and codecs.
+  // Presence is preserved even when the envelope or its data object is empty.
+  ApplicationExecutionContext execution_context = 6;
 }
 
 // Explicit allow or nonempty block reason; missing selection is malformed.

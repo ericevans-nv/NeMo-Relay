@@ -6519,6 +6519,7 @@ fn received_invocation(v: pb::InvokeRequest) -> PreparedInvocation {
             response,
             annotated_request,
             sanitize_context: None,
+            application_execution_context: None,
             execution_codec_context: Some(Box::new(ProtoLlmExecutionCodecContext {
                 request: request_codec,
                 response: response_codec,
@@ -6571,6 +6572,7 @@ fn received_invocation(v: pb::InvokeRequest) -> PreparedInvocation {
                 request: v.request,
                 response: None,
                 annotated_request: None,
+                application_execution_context: None,
                 execution_codec_context: None,
                 sanitize_context: v
                     .context
@@ -6584,6 +6586,7 @@ fn received_invocation(v: pb::InvokeRequest) -> PreparedInvocation {
                 request: None,
                 response: v.response,
                 annotated_request: None,
+                application_execution_context: None,
                 execution_codec_context: None,
                 sanitize_context: v
                     .context
@@ -6616,14 +6619,17 @@ fn received_invocation(v: pb::InvokeRequest) -> PreparedInvocation {
             continuation_id = v.continuation_id;
             (
                 S::LlmExecutionIntercept,
-                invoke_request_payload::Payload::Llm(Box::new(llm(
-                    v.request,
-                    None,
-                    v.request_codec,
-                    v.response_codec,
-                    None,
-                    v.model_name,
-                ))),
+                invoke_request_payload::Payload::Llm(Box::new(transport::LlmInvocation {
+                    application_execution_context: v.execution_context,
+                    ..llm(
+                        v.request,
+                        None,
+                        v.request_codec,
+                        v.response_codec,
+                        None,
+                        v.model_name,
+                    )
+                })),
             )
         }
         I::ConditionalMiddlewareGuardrail(v) => (
@@ -6668,6 +6674,7 @@ fn received_stream_invocation(v: pb::InvokeStreamRequest) -> PreparedInvocation 
                 response: None,
                 annotated_request: None,
                 sanitize_context: None,
+                application_execution_context: v.execution_context,
                 execution_codec_context: Some(Box::new(ProtoLlmExecutionCodecContext {
                     request: v.request_codec,
                     response: None,
@@ -6782,6 +6789,7 @@ impl WorkerPluginCallback {
                     response: None,
                     annotated_request: None,
                     sanitize_context: None,
+                    application_execution_context: None,
                     execution_codec_context: Some(Box::new(ProtoLlmExecutionCodecContext {
                         request: Some(codec()),
                         response: (surface == RegistrationSurface::LlmExecutionIntercept)

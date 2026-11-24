@@ -52,7 +52,7 @@ fn validate_context_container_length(
         && value.len()? > remaining
     {
         return Err(pyo3::exceptions::PyValueError::new_err(
-            "tool execution context exceeds 16384 serialized bytes",
+            "application execution context exceeds 16384 serialized bytes",
         ));
     }
     Ok(())
@@ -73,7 +73,7 @@ fn charge_context_value(
         };
         *remaining_units = remaining_units.checked_sub(minimum_units).ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "tool execution context exceeds 16384 serialized bytes",
+                "application execution context exceeds 16384 serialized bytes",
             )
         })?;
     }
@@ -110,7 +110,7 @@ fn validate_acyclic(
     let depth = parent_depth + 1;
     if depth_limit.is_some_and(|limit| depth > limit) {
         return Err(pyo3::exceptions::PyValueError::new_err(
-            "tool execution context exceeds 64 container levels",
+            "application execution context exceeds 64 container levels",
         ));
     }
     if is_container {

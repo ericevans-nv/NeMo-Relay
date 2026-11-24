@@ -70,10 +70,10 @@ Apply these version and compatibility rules:
   mandatory enum values, and missing mandatory alternatives. They must not
   interpret them as success, allow, or an empty payload. Tolerating unknown wire
   fields is not proof that a runtime conversion preserves those fields.
-- Preserving `ToolExecutionInvocation.execution_context` in tool execution
-  callbacks is required by the `1.0.0` worker contract, not an optional negotiated
-  feature. The value remains optional on each invocation: absence means no
-  context and an empty object is present context. Every worker claiming this
+- The `1.0.0` worker contract requires preserving the optional
+  `execution_context` field in `ToolExecutionInvocation`,
+  `LlmExecutionInvocation`, and `InvokeStreamRequest`. Absence means no
+  context, and an empty object is present context. Every worker claiming this
   contract must preserve both cases. Hosts and SDKs check protocol identity at
   activation rather than negotiating a separate context capability.
   Before the first release, rebuild and repackage development workers with the
@@ -306,18 +306,18 @@ or array adds a level; scalars add none). The depth bound is checked before
 serialization and middleware dispatch and retains the worker decoder's recursion
 protection.
 
-Tool execution context is a concrete optional Relay-owned DTO, separate from tool
-arguments, results, annotations, and event metadata. Its optional `data` field is
-an application-owned JSON object/map. Unknown top-level JSON properties and
+Application execution context is a concrete optional Relay-owned DTO, separate
+from tool arguments, model requests, codec capabilities, and event metadata.
+Its optional `data` field is an application-owned JSON object. Unknown top-level JSON properties and
 non-object `data` are rejected. Omission, `{}`, and `{"data":{}}` remain distinct.
 Application keys belong inside `data`; middleware owns their schema and trust
 policy. Relay does not interpret approval claims or grant authorization from them.
 The protobuf `ApplicationExecutionContext` and native v1.0 DTO have a dedicated
 optional data field rather than arbitrary JSON at the top level.
 
-Continuations preserve the original context; changing tool arguments does not
-change context, and nested managed calls do not inherit it. Python SDK access
-returns defensive copies. Native and worker SDKs implement the matching
+Continuations preserve the original context when an interceptor changes tool
+arguments or the model request. Nested managed calls supply their own context.
+Python SDK access returns defensive copies. Native and worker SDKs implement the matching
 unreleased 1.0 baseline; earlier development binaries must be rebuilt. Presence
 of a version identity alone cannot prove that an obsolete binary implements it.
 

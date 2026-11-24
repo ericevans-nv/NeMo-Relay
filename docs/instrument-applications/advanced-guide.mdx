@@ -198,7 +198,9 @@ review, then call `next` so the remaining middleware and tool callback still run
 Relay does not interpret the reference or change the approval flow itself.
 
 The application APIs carry the same optional value through each binding. Supply
-it on the managed execute call, then read it from the middleware context:
+it on the managed execute call, then read it from the middleware context. The
+table shows the tool APIs. For unary and streaming LLM calls, see
+[Instrument an LLM Call](/instrument-applications/instrument-llm-call#integration-pattern).
 
 | Binding | Supply context when executing | Read it in execution middleware |
 | --- | --- | --- |
@@ -208,10 +210,9 @@ it on the managed execute call, then read it from the middleware context:
 | Go | `WithApplicationExecutionContext(value)` on `ToolCallExecute` or `tools.Execute` | `context.ExecutionContext` (`*ApplicationExecutionContext`) |
 | C | `execution_context_json` on `nemo_relay_tool_call_execute` | Optional `execution_context` property in the callback's context JSON |
 
-Rust and Python worker SDKs expose the same optional context on their tool
-execution callback. The C entry point is additive: existing execute functions
-retain their signatures and omit context. Go rejects the option on manual
-`ToolCall` and `ToolCallEnd`, where execution middleware does not run.
+Rust and Python worker SDKs expose the same optional context to tool and LLM
+execution intercepts. Pass a null context pointer to omit it in C. Go rejects
+the context option on manual lifecycle calls.
 
 `ApplicationExecutionContext` is a concrete Relay-owned object. Its optional
 `data` field is a JSON object/map for application-defined payloads. The outer
@@ -259,8 +260,8 @@ The entire context, including `data`, must serialize to at most **16 KiB** of
 UTF-8 JSON and contain at most **64 nested container levels**. The root object
 counts as level 1, `data` as level 2, and each nested object or array adds one
 level. Limits are checked before JSON Schema traversal. Invalid envelope fields
-fail before middleware or the tool runs. Structural validation does not
-authenticate application claims.
+fail before middleware, the tool, or the model provider runs. Structural
+validation does not authenticate application claims.
 
 The canonical envelope schema is maintained with the shared Rust types in
 [`application-execution-context.schema.json`](https://github.com/NVIDIA/NeMo-Relay/blob/24886b101854ebc8a7666487eb3cb9a2773b62b0/crates/types/schemas/application-execution-context.schema.json).
@@ -271,7 +272,7 @@ own validators to the content of `data`.
 
 Rust callers can construct the checked type with
 `ApplicationExecutionContext::try_from(json_value)?` before passing it to the
-managed execution builder. Admission also revalidates values assembled or
+managed execution API. Admission also revalidates values assembled or
 modified through public Rust fields. Python keeps a dictionary-compatible typed
 envelope with a JSON mapping under `data`. Go offers
 `WithApplicationExecutionContext` for its typed model and retains
@@ -279,14 +280,13 @@ envelope with a JSON mapping under `data`. Go offers
 
 This field has a narrower lifetime and audience than event metadata:
 
-- Only execution intercepts receive it. Tool arguments, request intercepts,
-  conditional guardrails, and the final tool callback do not receive it as a
-  separate parameter.
+- Only execution intercepts receive it. Request intercepts, conditional
+  guardrails, tool callbacks, and provider callbacks keep their existing inputs.
 - Each intercept receives an isolated snapshot. Changes to a binding-local
   object do not change what another intercept sees. Calling `next` can rewrite
-  business arguments, but cannot replace the execution context.
-- A nested managed tool call has no execution context unless its caller supplies
-  one explicitly. Scope metadata does not populate it automatically.
+  tool arguments or the model request, while the execution context stays with
+  the original call.
+- A nested managed call receives context only when its caller supplies it.
 - Relay does not automatically copy it to model inputs, lifecycle events, results,
   annotations, or telemetry. Application and plugin code can still disclose it
   explicitly, so avoid logging it or adding credentials to it.
@@ -363,7 +363,7 @@ rebuilt. Separately versioned diagnostic contracts are unchanged.
 **Native plugin compatibility**
 
 Native plugins use native contract **v1.0**, including optional execution context
-on tool invocations. The SDK exposes the checked envelope through
+on tool and LLM invocations. The SDK exposes the checked envelope through
 `context.execution_context()`. The native contract is separate from the Relay
 package version and worker protocol identity, even though all target 1.0 here.
 
@@ -372,10 +372,10 @@ development baseline changes. The host checks the declared native contract and
 complete ABI schema before creating the plugin; a binary built against an
 incompatible earlier schema is rejected rather than silently losing context.
 See [Native ABI Reference](/build-plugins/native/native-abi-reference#application-execution-context)
-for the transport. Public C callbacks receive an optional `execution_context`
-property in their context JSON. The Go binding decodes that envelope before
-invoking the public callback, which receives a `ToolExecutionContext` struct and
-reads `context.ExecutionContext`.
+for the transport. C tool callbacks read the optional `execution_context`
+property in their context JSON. C LLM callbacks read the borrowed string in
+`context.execution_context_json`. Go decodes both forms into
+`context.ExecutionContext` before invoking the application’s callback.
 
 ## Scope Middleware to One Request
 
@@ -417,8 +417,8 @@ Each field defaults to `True`.
 
 The native Execute functions accept an execution-options object. Its fields
 are `conditionalExecution`, `requestIntercepts`, and `executionIntercepts`.
-A field that you omit keeps its stage on. Tool execute calls can additionally
-supply application execution context after this parameter.
+A field that you omit keeps its stage on. Managed tool and LLM execute calls
+can supply application execution context after this parameter.
 
 In the working tool example, add `null` for `toolCallId` after the `metadata`
 argument. Then add `{ requestIntercepts: false }` as the execution-options argument.

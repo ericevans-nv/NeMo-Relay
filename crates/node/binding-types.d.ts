@@ -463,12 +463,14 @@ export type LlmRequestContext = LlmSanitizeRequestContext;
 /** Response codec context for an LLM execution intercept. */
 export type LlmResponseContext = LlmSanitizeResponseContext;
 
-/** Codecs available to one LLM execution intercept call. */
+/** Codecs and application context available to one LLM execution intercept call. */
 export interface LlmExecutionContext {
   /** Request codec, with decode and encode when available. */
   requestCodec: LlmRequestContext;
   /** Response codec, with decode when available; `null` for streaming. */
   responseCodec: LlmResponseContext | null;
+  /** Application context supplied for this execution, or null when omitted. */
+  executionContext?: ApplicationExecutionContext | null;
 }
 
 /** Schema tag for an optimization payload. */

@@ -580,7 +580,7 @@ fn register_fixture_llm_hooks(
     ctx.register_llm_execution_intercept(
         "fixture_llm_execution",
         0,
-        move |name, request, _context, next: LlmNext| {
+        move |name, request, context, next: LlmNext| {
             let runtime = unary_runtime.clone();
             let name = name.to_owned();
             async move {
@@ -597,7 +597,11 @@ fn register_fixture_llm_hooks(
                         "worker_plugin_llm_execution_request",
                     ))
                     .await?;
-                Ok(mark_json(response, "worker_plugin_llm_execution"))
+                let mut response = mark_json(response, "worker_plugin_llm_execution");
+                if let Some(context) = context.execution_context() {
+                    response["fixture_context"] = context.to_json();
+                }
+                Ok(response)
             }
         },
     );
@@ -605,7 +609,7 @@ fn register_fixture_llm_hooks(
     ctx.register_llm_stream_execution_intercept(
         "fixture_llm_stream_execution",
         0,
-        move |name, request, _context, next: LlmStreamNext| {
+        move |name, request, context, next: LlmStreamNext| {
             let runtime = stream_runtime.clone();
             let name = name.to_owned();
             async move {
@@ -645,9 +649,17 @@ fn register_fixture_llm_hooks(
                         "worker_plugin_llm_stream_execution_request",
                     ))
                     .await?;
-                let mapped: JsonStream = Box::pin(tokio_stream::StreamExt::map(stream, |chunk| {
-                    chunk.map(|value| mark_json(value, "worker_plugin_llm_stream_execution"))
-                }));
+                let application_context = context.execution_context().map(|value| value.to_json());
+                let mapped: JsonStream =
+                    Box::pin(tokio_stream::StreamExt::map(stream, move |chunk| {
+                        chunk.map(|value| {
+                            let mut value = mark_json(value, "worker_plugin_llm_stream_execution");
+                            if let Some(context) = &application_context {
+                                value["fixture_context"] = context.clone();
+                            }
+                            value
+                        })
+                    }));
                 Ok(mapped)
             }
         },

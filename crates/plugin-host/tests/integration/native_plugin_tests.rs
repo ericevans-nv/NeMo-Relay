@@ -22,7 +22,8 @@ use nemo_relay_plugin_host::{
 use nemo_relay_runtime::api::event::{Event, ScopeCategory};
 use nemo_relay_runtime::api::llm::{
     LlmCallEndParams, LlmCallExecuteParams, LlmCallParams, LlmRequest, LlmStreamCallExecuteParams,
-    llm_call, llm_call_end, llm_call_execute, llm_stream_call_execute,
+    llm_call, llm_call_end, llm_call_execute, llm_call_execute_with_context,
+    llm_stream_call_execute, llm_stream_call_execute_with_context,
 };
 use nemo_relay_runtime::api::runtime::{
     LlmJsonStream, TASK_SCOPE_STACK, ThreadScopeStackBinding, capture_thread_scope_stack,
@@ -763,10 +764,12 @@ async fn sdk_cdylib_assert_behavior() {
         managed_snapshot["scopes"][1]["scope_id"],
         managed_agent.uuid.to_string()
     );
+    let application_context =
+        json!({"data": {"fixture_marker": "native-only", "integer": u64::MAX}});
     let llm_execute_response = TASK_SCOPE_STACK
         .scope(
             managed_stack.clone(),
-            llm_call_execute(
+            llm_call_execute_with_context(
                 LlmCallExecuteParams::builder()
                     .name("native-fixture-llm-execute")
                     .request(LlmRequest {
@@ -783,6 +786,7 @@ async fn sdk_cdylib_assert_behavior() {
                         })
                     }))
                     .build(),
+                Some(application_context.clone().try_into().unwrap()),
             ),
         )
         .await
@@ -796,6 +800,12 @@ async fn sdk_cdylib_assert_behavior() {
     assert_eq!(
         llm_execute_response["request"]["native_plugin_llm_execution_request"],
         true
+    );
+    assert_eq!(llm_execute_response["fixture_context"], application_context);
+    assert!(
+        !llm_execute_response["request"]
+            .to_string()
+            .contains("native-only")
     );
     flush_subscribers().expect("managed LLM native fixture events should flush");
     let managed_llm_events = events.lock().unwrap().clone();
@@ -1005,7 +1015,7 @@ async fn sdk_cdylib_assert_behavior() {
     let mut stream = TASK_SCOPE_STACK
         .scope(
             managed_stack.clone(),
-            llm_stream_call_execute(
+            llm_stream_call_execute_with_context(
                 LlmStreamCallExecuteParams::builder()
                     .name("native-fixture-llm-stream")
                     .request(LlmRequest {
@@ -1031,6 +1041,7 @@ async fn sdk_cdylib_assert_behavior() {
                         Json::Array(finalizer_chunks.lock().unwrap().clone())
                     }))
                     .build(),
+                Some(json!({"data": {}}).try_into().unwrap()),
             ),
         )
         .await
@@ -1060,6 +1071,13 @@ async fn sdk_cdylib_assert_behavior() {
     assert_eq!(stream_chunks[0]["native_plugin_llm_stream_execution"], true);
     assert_eq!(stream_chunks[1]["native_plugin_llm_stream_execution"], true);
     assert_eq!(*collected_stream_chunks.lock().unwrap(), stream_chunks);
+    assert_eq!(stream_chunks[0]["fixture_context"], json!({"data": {}}));
+    assert_eq!(stream_chunks[1]["fixture_context"], json!({"data": {}}));
+    assert!(
+        stream_chunks[0]["request"]
+            .get("execution_context")
+            .is_none()
+    );
     flush_subscribers().expect("stream native fixture events should flush");
     let stream_events = events.lock().unwrap().clone();
     let stream_start = find_event(

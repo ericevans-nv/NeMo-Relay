@@ -110,6 +110,7 @@ impl TryFrom<wire::InvokeRequest> for CallbackInvocation {
                         request: v.request,
                         request_codec: v.request_codec,
                         response_codec: v.response_codec,
+                        application_execution_context: v.execution_context,
                         ..Default::default()
                     })),
                 )
@@ -142,6 +143,7 @@ impl From<wire::InvokeStreamRequest> for CallbackInvocation {
                 model_name: v.model_name,
                 request: v.request,
                 request_codec: v.request_codec,
+                application_execution_context: v.execution_context,
                 ..Default::default()
             }))),
         }

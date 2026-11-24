@@ -589,7 +589,7 @@ typedef struct NemoRelayLlmSanitizeRequestContext NemoRelayLlmRequestContext;
 typedef struct NemoRelayLlmSanitizeResponseContext NemoRelayLlmResponseContext;
 
 /**
- * Directional codec context supplied to an LLM execution intercept.
+ * Codec capabilities and application context for an LLM execution intercept.
  *
  * `request_codec` is always present. `response_codec` is non-null for unary
  * execution and null for streaming execution, where Relay has no completed
@@ -609,6 +609,10 @@ typedef struct NemoRelayLlmExecutionContext {
    * Borrowed capability for recording optimization evidence on this call.
    */
   const struct FfiLlmOptimizationRecorder *optimization_recorder;
+  /**
+   * Borrowed application context JSON, or null if omitted.
+   */
+  const char *execution_context_json;
 } NemoRelayLlmExecutionContext;
 
 /**
@@ -1707,6 +1711,10 @@ NemoRelayStatus nemo_relay_llm_call_end(const struct FfiLLMHandle *handle,
  *   middleware stages. Unknown bits return `InvalidArg`. Event sanitization,
  *   codecs, trace context, and completion still run.
  *
+ * `execution_context_json` is a readable NUL-terminated application envelope
+ * within 16 KiB and 64 container levels, or null to omit it. It is available
+ * only to execution interceptors.
+ *
  * Relay owns callback data when the call starts. It releases the data even if validation fails.
  *
  * # Safety
@@ -1729,6 +1737,7 @@ NemoRelayStatus nemo_relay_llm_call_execute(const char *name,
                                             const struct FfiCodecHandle *request_codec,
                                             const struct FfiCodecHandle *response_codec,
                                             uint32_t skip_stages,
+                                            const char *execution_context_json,
                                             const struct FfiCancellation *cancellation,
                                             char **out);
 
@@ -1763,6 +1772,10 @@ NemoRelayStatus nemo_relay_llm_call_execute(const char *name,
  *   middleware stages. Unknown bits return `InvalidArg`. Event sanitization,
  *   codecs, trace context, and completion still run.
  *
+ * `execution_context_json` is a readable NUL-terminated application envelope
+ * within 16 KiB and 64 container levels, or null to omit it. It is available
+ * only to execution interceptors.
+ *
  * Relay owns callback data when the call starts. It releases the data even if validation fails.
  *
  * # Safety
@@ -1791,6 +1804,7 @@ NemoRelayStatus nemo_relay_llm_stream_call_execute(const char *name,
                                                    const struct FfiCodecHandle *request_codec,
                                                    const struct FfiCodecHandle *response_codec,
                                                    uint32_t skip_stages,
+                                                   const char *execution_context_json,
                                                    const struct FfiCancellation *cancellation,
                                                    struct FfiStream **out);
 

@@ -232,6 +232,9 @@ message InvokeStreamRequest {
   string continuation_id = 7 [(buf.validate.field).string = {min_len: 1}];
   // Required request codec identity and optional invocation-scoped access capability.
   LlmCodecContext request_codec = 8 [(buf.validate.field).required = true];
+  // Optional application context for this invocation, separate from the provider request and codecs.
+  // Presence is preserved even when the envelope or its data object is empty.
+  ApplicationExecutionContext execution_context = 9;
 }
 
 // Exactly one item required. Error is terminal; clean EOF is successful closure.

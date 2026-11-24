@@ -188,26 +188,8 @@ fn tool_execution_callback(callback: Arc<ContextToolFn>) -> Arc<Unary> {
             if invocation.surface != a::Surface::ToolExecutionIntercept {
                 return Err("invalid native tool execution surface".into());
             }
-            let execution_context = invocation
-                .execution_context
-                .map(|context| {
-                    let value = abi::Json::Object(
-                        context
-                            .data
-                            .into_iter()
-                            .map(|fields| abi::Field {
-                                key: "data".into(),
-                                value: abi::Json::Object(fields),
-                            })
-                            .collect(),
-                    );
-                    validate_context_depth(&value)?;
-                    let value = from_abi(value)
-                        .map_err(|_| "invalid application execution context".to_owned())?;
-                    crate::ApplicationExecutionContext::try_from(value)
-                        .map_err(|_| "invalid application execution context".to_owned())
-                })
-                .transpose()?;
+            let execution_context =
+                decode_application_execution_context(invocation.execution_context)?;
             let value = callback(
                 ToolExecutionContext {
                     tool_name: invocation.name,
@@ -221,6 +203,30 @@ fn tool_execution_callback(callback: Arc<ContextToolFn>) -> Arc<Unary> {
             Ok(UserResult::Tool(value))
         })
     })
+}
+
+fn decode_application_execution_context(
+    application_execution_context: Option<a::ApplicationExecutionContext>,
+) -> Result<Option<crate::ApplicationExecutionContext>> {
+    application_execution_context
+        .map(|context| {
+            let value = abi::Json::Object(
+                context
+                    .data
+                    .into_iter()
+                    .map(|fields| abi::Field {
+                        key: "data".into(),
+                        value: abi::Json::Object(fields),
+                    })
+                    .collect(),
+            );
+            validate_context_depth(&value)?;
+            let value =
+                from_abi(value).map_err(|_| "invalid application execution context".to_owned())?;
+            crate::ApplicationExecutionContext::try_from(value)
+                .map_err(|_| "invalid application execution context".to_owned())
+        })
+        .transpose()
 }
 
 /// Bound direct ABI input before recursive JSON conversion and author code.
@@ -1154,6 +1160,7 @@ impl PluginContext<'_> {
                         LlmExecutionContext::new(
                             i.context.request_codec,
                             i.context.response_codec,
+                            decode_application_execution_context(i.execution_context)?,
                         )?,
                         LlmNext(Arc::new(_next.ok_or("missing LLM continuation")?)),
                     )
@@ -1203,6 +1210,7 @@ impl PluginContext<'_> {
                             LlmExecutionContext::new(
                                 i.context.request_codec,
                                 i.context.response_codec,
+                                decode_application_execution_context(i.execution_context)?,
                             )?,
                             LlmStreamNext {
                                 next: Arc::new(next),

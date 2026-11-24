@@ -65,20 +65,22 @@ JSON text. SDK conversions preserve signed and unsigned integers, finite floatin
 values, Unicode, embedded NULs, nested values, and negative zero. They reject
 non-finite numbers and duplicate object keys.
 
-## Tool Execution Context
+## Application Execution Context
 
 The v1.0 `Invocation` carries an optional concrete `ApplicationExecutionContext`
-separately from business arguments. Its optional `data` map uses owned lossless
-JSON fields for application payloads. The SDK exposes the checked envelope
-through `context.execution_context()` in ordinary tool middleware. Relay owns the
-envelope's fields; middleware owns the schema and trust policy for application
+separately from tool arguments and model requests. Its optional `data` map uses
+owned lossless JSON fields for application payloads. The SDK exposes the checked envelope
+through `context.execution_context()` in tool, unary LLM, and streaming LLM
+execution intercepts. Relay owns the envelope's fields. Middleware owns the
+schema and trust policy for application
 data. Structural validation does not authenticate approval assertions. See the
 [application integration guide](../../docs/instrument-applications/advanced-guide.mdx#application-execution-context).
 
 The current unreleased baseline includes execution context in native v1.0.
 An obsolete development plugin whose invocation layout predates that field is
 rejected before factory creation, even when it also declares v1.0. Rebuild the
-plugin with the matching SDK.
+plugin with the matching SDK. Older builds with the same layout can load, but
+need the updated SDK to read context in LLM execution intercepts.
 
 ## Loading and Component Cleanup
 

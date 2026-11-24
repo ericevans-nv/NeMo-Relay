@@ -3990,6 +3990,89 @@ async def test_required_worker_contract_delivers_context_without_feature_negotia
     assert seen["execution_context"] == execution_context
 
 
+@pytest.mark.parametrize(
+    ("supplied", "valid"),
+    [
+        (None, True),
+        ({}, True),
+        ({"data": {}}, True),
+        ({"data": {"marker": "application-only", "integer": 2**64 - 1}}, True),
+        ({"data": {"marker": "x" * 16_384}}, False),
+    ],
+)
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_worker_llm_application_context_preserves_presence_and_rejects_large_envelopes(
+    supplied: dict[str, Any] | None,
+    valid: bool,
+    streaming: bool,
+) -> None:
+    seen: list[tuple[Json, Json]] = []
+    stream_closed = False
+    provider_request = {"headers": {}, "content": {"prompt": "hello"}}
+
+    class ContextPlugin(WorkerPlugin):
+        plugin_id = "tests.llm_application_context"
+
+        def register(self, ctx: PluginContext, config: Json) -> None:
+            del config
+
+            def observe(request: Json, context: plugin_api.LlmExecutionContext) -> None:
+                seen.append((request, context.execution_context))
+                if context.execution_context is not None:
+                    returned = cast(dict[str, Json], context.execution_context)
+                    returned["data"] = {"changed": True}
+                    assert context.execution_context == supplied
+
+            async def run_unary(_name, request, context, _next_call):
+                observe(request, context)
+                return {"success": True}
+
+            async def run_stream(_name, request, context, _next_call):
+                nonlocal stream_closed
+                try:
+                    observe(request, context)
+                    yield {"success": True}
+                finally:
+                    stream_closed = True
+
+            ctx.register_llm_execution_intercept("unary_context", run_unary)
+            ctx.register_llm_stream_execution_intercept("stream_context", run_stream)
+
+    service = _service(ContextPlugin(), RecordingHostStub())
+    await _register(service)
+    wire_context = None
+    if supplied is not None:
+        wire_context = runtime_pb.ApplicationExecutionContext()
+        if "data" in supplied:
+            wire_context.data.CopyFrom(_encode_payload(common_pb.JsonObject, supplied["data"]))
+    payload = _llm_payload(request=provider_request)
+    if streaming:
+        invocation = _invoke_request(
+            "stream_context", common_pb.REGISTRATION_SURFACE_LLM_STREAM_EXECUTION_INTERCEPT, llm=payload
+        )
+        if wire_context is not None:
+            invocation.execution_context.CopyFrom(wire_context)
+        [response] = [item async for item in service.InvokeStream(invocation, AbortContext())]
+        if valid:
+            assert _stream_value(response) == {"success": True}
+        assert stream_closed is valid
+    else:
+        invocation = _invoke_request(
+            "unary_context", common_pb.REGISTRATION_SURFACE_LLM_EXECUTION_INTERCEPT, llm=payload
+        )
+        if wire_context is not None:
+            invocation.llm_execution_intercept.execution_context.CopyFrom(wire_context)
+        response = await service.Invoke(invocation, AbortContext())
+        if valid:
+            assert _envelope_value(response.llm_response) == {"success": True}
+
+    if valid:
+        assert seen == [(provider_request, supplied)]
+    else:
+        assert "16384 serialized bytes" in response.error.message
+        assert seen == []
+
+
 def test_tool_execution_context_is_a_private_defensive_snapshot() -> None:
     original = {"data": {"operation": {"attempt": 1}}}
     context = ToolExecutionContext("lookup", {}, execution_context=original)
@@ -4039,7 +4122,7 @@ def test_tool_execution_context_replace_can_replace_or_clear_context() -> None:
 @pytest.mark.parametrize("invalid", [[], "not-an-object", True])
 def test_tool_execution_context_replace_rejects_invalid_context(invalid: Json) -> None:
     context = ToolExecutionContext("lookup", {})
-    with pytest.raises(WorkerSdkError, match="tool execution context must be an object"):
+    with pytest.raises(WorkerSdkError, match="application execution context must be an object"):
         replace(context, execution_context=invalid)
 
 

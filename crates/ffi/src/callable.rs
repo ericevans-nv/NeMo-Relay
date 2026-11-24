@@ -210,7 +210,7 @@ pub type NemoRelayLlmRequestContext = NemoRelayLlmSanitizeRequestContext;
 /// Response codec context exposed to an LLM execution intercept.
 pub type NemoRelayLlmResponseContext = NemoRelayLlmSanitizeResponseContext;
 
-/// Directional codec context supplied to an LLM execution intercept.
+/// Codec capabilities and application context for an LLM execution intercept.
 ///
 /// `request_codec` is always present. `response_codec` is non-null for unary
 /// execution and null for streaming execution, where Relay has no completed
@@ -224,6 +224,8 @@ pub struct NemoRelayLlmExecutionContext {
     pub response_codec: *const NemoRelayLlmResponseContext,
     /// Borrowed capability for recording optimization evidence on this call.
     pub optimization_recorder: *const crate::types::FfiLlmOptimizationRecorder,
+    /// Borrowed application context JSON, or null if omitted.
+    pub execution_context_json: *const c_char,
 }
 
 /// LLM request sanitizer. It receives the request first and its codec context
@@ -1235,7 +1237,15 @@ fn with_ffi_llm_execution_context<T>(
     // the complete callback. Foreign code must not retain any of their pointers.
     let recorder = nemo_relay_runtime::api::optimization::current_llm_optimization_recorder()
         .map(crate::types::FfiLlmOptimizationRecorder);
+    let execution_context_json = context
+        .execution_context()
+        .map(|context| CString::new(context.to_json().to_string()))
+        .transpose()
+        .map_err(|_| FlowError::InvalidArgument("invalid application execution context".into()))?;
     Ok(callback(NemoRelayLlmExecutionContext {
+        execution_context_json: execution_context_json
+            .as_ref()
+            .map_or(std::ptr::null(), |context| context.as_ptr()),
         optimization_recorder: recorder
             .as_ref()
             .map_or(std::ptr::null(), std::ptr::from_ref),

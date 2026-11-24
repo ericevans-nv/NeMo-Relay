@@ -111,14 +111,19 @@ impl LlmResponseContext {
 pub struct LlmExecutionContext {
     request_codec: LlmRequestContext,
     response_codec: Option<LlmResponseContext>,
+    application_execution_context: Option<crate::ApplicationExecutionContext>,
 }
 impl LlmExecutionContext {
     /// Build invocation codec context with an optional response capability for unary execution.
-    pub(super) fn new(req: Option<a::CodecBox>, res: Option<a::CodecBox>) -> Result<Self> {
-        let (codec, resolved) = request(req)?;
+    pub(super) fn new(
+        request_capability: Option<a::CodecBox>,
+        response_capability: Option<a::CodecBox>,
+        application_execution_context: Option<crate::ApplicationExecutionContext>,
+    ) -> Result<Self> {
+        let (codec, resolved) = request(request_capability)?;
         let request_codec = LlmRequestContext { codec, resolved };
-        let response_codec = if res.is_some() {
-            let (codec, resolved) = response(res)?;
+        let response_codec = if response_capability.is_some() {
+            let (codec, resolved) = response(response_capability)?;
             Some(LlmResponseContext { codec, resolved })
         } else {
             None
@@ -126,8 +131,15 @@ impl LlmExecutionContext {
         Ok(Self {
             request_codec,
             response_codec,
+            application_execution_context,
         })
     }
+    /// Application context supplied for this execution, if present.
+    #[must_use]
+    pub fn execution_context(&self) -> Option<&crate::ApplicationExecutionContext> {
+        self.application_execution_context.as_ref()
+    }
+
     pub fn request_codec(&self) -> &LlmRequestContext {
         &self.request_codec
     }

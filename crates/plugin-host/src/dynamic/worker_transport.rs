@@ -37,6 +37,7 @@ pub(crate) struct LlmInvocation {
     pub response: Option<wire::JsonValue>,
     pub sanitize_context: Option<SanitizeContext>,
     pub execution_codec_context: Option<Box<ExecutionCodecContext>>,
+    pub application_execution_context: Option<wire::ApplicationExecutionContext>,
 }
 #[derive(Clone)]
 pub(crate) enum SanitizeContext {
@@ -130,6 +131,7 @@ impl PreparedInvocation {
                         continuation_id: self.continuation_id,
                         request_codec: contexts.request,
                         response_codec: contexts.response,
+                        execution_context: v.application_execution_context,
                     })
                 }
                 _ => return Err(missing("matching LLM surface")),
@@ -172,6 +174,7 @@ impl PreparedInvocation {
             request: v.request,
             continuation_id: self.continuation_id,
             request_codec: contexts.request,
+            execution_context: v.application_execution_context,
         })
     }
 }

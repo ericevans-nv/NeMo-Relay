@@ -2870,6 +2870,9 @@ impl WorkerPluginCallback {
             _ => {}
         }
 
+        let application_execution_context =
+            context.execution_context().map(encode_wire).transpose()?;
+
         let request_guard = context
             .request_codec()
             .resolve_codec()
@@ -2904,6 +2907,7 @@ impl WorkerPluginCallback {
         let Some(invoke_request_payload::Payload::Llm(llm)) = invoke.payload.as_mut() else {
             unreachable!("LLM execution invocation must have an LLM payload");
         };
+        llm.application_execution_context = application_execution_context;
         llm.execution_codec_context = Some(Box::new(ProtoLlmExecutionCodecContext {
             request: Some(request),
             response,
@@ -5487,6 +5491,7 @@ fn invoke_request_payload_llm(
                 .map(|value| encode_json(JSON_SCHEMA, value)),
             sanitize_context: None,
             execution_codec_context: None,
+            application_execution_context: None,
         },
     )))
 }

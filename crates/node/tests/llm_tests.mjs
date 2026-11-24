@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const lib = require('../dist/index.js');
+const typed = require('../dist/typed.js');
 const nodeDir = fileURLToPath(new URL('..', import.meta.url));
 
 const {
@@ -2020,6 +2021,167 @@ describe('LLM intercepts', () => {
     assert.equal(result.original, false);
     assert.equal(result.wrapped, true);
     deregisterLlmExecutionIntercept('node_llm_exec_repl');
+  });
+
+  it('snapshots LLM application context for both unary callback APIs', async () => {
+    const name = 'node_llm_application_context';
+    const marker = 'interceptor-only';
+    const expected = { data: { marker, ['__proto__']: { own: true } } };
+    const observed = [];
+    const events = [];
+    registerSubscriber(name, (event) => events.push(event));
+    registerLlmExecutionIntercept(`${name}_editor`, 1, async (request, context, next) => {
+      assert.deepEqual(context.executionContext, expected);
+      assert.equal(Object.hasOwn(context.executionContext.data, '__proto__'), true);
+      context.executionContext.data.marker = 'changed by interceptor';
+      return next(request);
+    });
+    registerLlmExecutionIntercept(`${name}_observer`, 2, async (request, context, next) => {
+      observed.push(context.executionContext);
+      return next(request);
+    });
+    try {
+      for (const execute of [llmCallExecute, llmCallExecuteAsync]) {
+        const supplied = structuredClone(expected);
+        const pending = execute(
+          name,
+          makeNative(),
+          (request) => {
+            assert.deepEqual(request.content, makeNative().content);
+            assert.equal(JSON.stringify(request.headers).includes(marker), false);
+            return { complete: true };
+          },
+          null,
+          null,
+          null,
+          { eventField: true },
+          null,
+          null,
+          null,
+          null,
+          null,
+          supplied,
+        );
+        supplied.data.marker = 'changed by caller';
+        assert.deepEqual(await pending, { complete: true });
+      }
+      await flushSubscriberCallbacks();
+    } finally {
+      deregisterLlmExecutionIntercept(`${name}_editor`);
+      deregisterLlmExecutionIntercept(`${name}_observer`);
+      deregisterSubscriber(name);
+    }
+    assert.deepEqual(observed, [expected, expected]);
+    const lifecycleEvents = events.filter((event) => event.name === name);
+    const started = lifecycleEvents.filter((event) => event.scope_category === 'start');
+    const ended = lifecycleEvents.filter((event) => event.scope_category === 'end');
+    assert.equal(started.length, 2);
+    assert.equal(ended.length, 2);
+    for (const event of started) {
+      assert.deepEqual(event.data.content, makeNative().content);
+      assert.equal(event.metadata.eventField, true);
+    }
+    for (const event of ended) {
+      assert.deepEqual(event.data, { complete: true });
+    }
+    for (const event of lifecycleEvents) {
+      assert.equal(JSON.stringify([event.data, event.metadata]).includes(marker), false);
+    }
+  });
+
+  it('typed unary LLM application context distinguishes omission and empty objects', async () => {
+    const name = 'node_typed_llm_application_context';
+    const observed = [];
+    registerLlmExecutionIntercept(name, 1, async (request, context, next) => {
+      observed.push(context.executionContext);
+      return next(request);
+    });
+    try {
+      const codec = new typed.JsonPassthrough();
+      const provider = () => ({ complete: true });
+      assert.deepEqual(await typed.typedLlmExecute(name, makeNative(), provider, codec), { complete: true });
+      for (const executionContext of [{}, { data: {} }, { data: { attempt: 1 } }]) {
+        const result = await typed.typedLlmExecute(name, makeNative(), provider, codec, { executionContext });
+        assert.deepEqual(result, { complete: true });
+      }
+    } finally {
+      deregisterLlmExecutionIntercept(name);
+    }
+    assert.deepEqual(observed, [null, {}, { data: {} }, { data: { attempt: 1 } }]);
+  });
+
+  it('rejects invalid typed LLM application context before middleware and provider callbacks', async () => {
+    const name = 'node_llm_application_context_invalid';
+    const codec = new typed.JsonPassthrough();
+    const unexpectedCall = () => assert.fail('Invalid application context reached a callback');
+    registerLlmConditionalExecutionGuardrail(name, 1, unexpectedCall);
+    try {
+      for (const executionContext of [{ data: [] }, { data: { text: 'x'.repeat(16_384) } }]) {
+        await assert.rejects(
+          async () => typed.typedLlmExecute(name, makeNative(), unexpectedCall, codec, { executionContext }),
+          /application execution context/,
+        );
+        await assert.rejects(
+          async () =>
+            typed.typedLlmStreamExecute(
+              name,
+              makeNative(),
+              unexpectedCall,
+              unexpectedCall,
+              unexpectedCall,
+              codec,
+              codec,
+              { executionContext },
+            ),
+          /application execution context/,
+        );
+      }
+    } finally {
+      deregisterLlmConditionalExecutionGuardrail(name);
+    }
+  });
+
+  it('typed streaming LLM application context is delivered and producer cleanup completes on close', async () => {
+    const name = 'node_typed_llm_stream_application_context';
+    const supplied = { data: { request: 'stream' } };
+    const codec = new typed.JsonPassthrough();
+    let producerClosed = false;
+    let stream;
+    registerLlmStreamExecutionIntercept(name, 1, async (request, context, next) => {
+      const downstream = await next(request);
+      assert.deepEqual(context.executionContext, supplied);
+      assert.equal(context.responseCodec, null);
+      return downstream;
+    });
+    try {
+      stream = await typed.typedLlmStreamExecute(
+        name,
+        makeNative(),
+        async function* (request) {
+          assert.deepEqual(request.content, makeNative().content);
+          try {
+            yield { token: 'first' };
+            for (;;) {
+              yield { token: 'later' };
+            }
+          } finally {
+            producerClosed = true;
+          }
+        },
+        () => {},
+        () => ({}),
+        codec,
+        codec,
+        { executionContext: supplied },
+      );
+      assert.deepEqual(await stream.next(), { token: 'first' });
+      await assertCompletesWithin(stream.close(), 'Closing a context-bearing stream must finish producer cleanup');
+      assert.equal(producerClosed, true);
+      stream = null;
+    } finally {
+      await stream?.close();
+      deregisterLlmStreamExecutionIntercept(name);
+    }
   });
 
   it('execution context exposes codec states, operations, and callback lifetime', async () => {

@@ -395,6 +395,7 @@ impl WorkerResponseCodec {
 pub struct LlmExecutionContext {
     request_codec: LlmRequestContext,
     response_codec: Option<LlmResponseContext>,
+    application_execution_context: Option<ApplicationExecutionContext>,
 }
 
 impl std::fmt::Debug for LlmExecutionContext {
@@ -411,6 +412,12 @@ impl std::fmt::Debug for LlmExecutionContext {
 }
 
 impl LlmExecutionContext {
+    /// Application context supplied for this execution, if present.
+    #[must_use]
+    pub fn execution_context(&self) -> Option<&ApplicationExecutionContext> {
+        self.application_execution_context.as_ref()
+    }
+
     /// Request codec identity and invocation-scoped operations.
     #[must_use]
     pub fn request_codec(&self) -> &LlmRequestContext {
@@ -3432,6 +3439,7 @@ struct LlmPayload {
     response: Option<wire::JsonValue>,
     request_codec: Option<wire::LlmCodecContext>,
     response_codec: Option<wire::LlmCodecContext>,
+    application_execution_context: Option<wire::ApplicationExecutionContext>,
 }
 
 impl LlmPayload {
@@ -3470,6 +3478,11 @@ impl LlmPayload {
                 invocation_id: Some(invocation_id.to_owned()),
             },
             response_codec,
+            application_execution_context: self
+                .application_execution_context
+                .as_ref()
+                .map(decode_wire)
+                .transpose()?,
         })
     }
     fn sanitize_request_context(&self, invocation_id: &str) -> Result<LlmSanitizeRequestContext> {

@@ -55,6 +55,71 @@ fn tool_context_decoding_preserves_optional_objects_independently_of_args() {
 }
 
 #[test]
+fn llm_application_context_decodes_both_shapes_and_rejects_oversized_data() {
+    let codec = wire::LlmCodecContext {
+        codec: Some(wire::LlmCodecReference {
+            kind: "none".into(),
+            id: None,
+        }),
+        capability_id: None,
+    };
+    let runtime = disconnected_runtime();
+    for (application_context, valid) in [
+        (None, true),
+        (Some(json!({})), true),
+        (Some(json!({"data": {}})), true),
+        (
+            Some(json!({"data": {"marker": "application-only", "integer": u64::MAX}})),
+            true,
+        ),
+        (Some(json!({"data": {"marker": "x".repeat(16_384)}})), false),
+    ] {
+        let wire_context =
+            application_context
+                .as_ref()
+                .map(|value| wire::ApplicationExecutionContext {
+                    data: value.get("data").map(|data| encode_wire(data).unwrap()),
+                });
+        let unary = CallbackInvocation::try_from(wire::InvokeRequest {
+            invocation_id: "unary".into(),
+            invocation: Some(wire::invoke_request::Invocation::LlmExecutionIntercept(
+                wire::LlmExecutionInvocation {
+                    request_codec: Some(codec.clone()),
+                    response_codec: Some(codec.clone()),
+                    execution_context: wire_context.clone(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        })
+        .unwrap();
+        let streaming = CallbackInvocation::from(wire::InvokeStreamRequest {
+            invocation_id: "stream".into(),
+            request_codec: Some(codec.clone()),
+            execution_context: wire_context,
+            ..Default::default()
+        });
+        for (invocation, response_required) in [(unary, true), (streaming, false)] {
+            let payload = llm_payload(invocation.payload).unwrap();
+            let context =
+                payload.execution_context(&runtime, &invocation.invocation_id, response_required);
+            if !valid {
+                assert!(context.is_err());
+                continue;
+            }
+            let context = context.unwrap();
+            assert_eq!(
+                context
+                    .execution_context()
+                    .map(ApplicationExecutionContext::to_json),
+                application_context
+            );
+            assert!(!format!("{context:?}").contains("application-only"));
+        }
+    }
+}
+
+#[test]
 fn endpoint_announcement_creates_parents_and_reports_conflicting_paths() {
     let directory = std::env::temp_dir().join(format!(
         "relay-worker-{}",

@@ -12,10 +12,11 @@ use serde_json::json;
 use tokio_stream::StreamExt;
 
 use super::{
-    CreateLlmHandleParams, LlmCallEndParams, LlmCallExecuteParams, LlmCallParams, LlmHandle,
-    LlmRequest, LlmStreamCallExecuteParams, create_llm_handle, emit_llm_start,
-    emit_optimization_marks_with, enqueue_optimization_marks, llm_call, llm_call_end,
-    llm_call_execute, llm_stream_call_execute, project_llm_request_to_current_user_turn,
+    ApplicationExecutionContext, CreateLlmHandleParams, LlmCallEndParams, LlmCallExecuteParams,
+    LlmCallParams, LlmHandle, LlmRequest, LlmStreamCallExecuteParams, create_llm_handle,
+    emit_llm_start, emit_optimization_marks_with, enqueue_optimization_marks, llm_call,
+    llm_call_end, llm_call_execute, llm_call_execute_with_context, llm_stream_call_execute,
+    llm_stream_call_execute_with_context, project_llm_request_to_current_user_turn,
     sanitize_context_for_request_codec, sanitize_context_for_response_codec,
 };
 use crate::api::event::{Event, ScopeCategory};
@@ -69,6 +70,207 @@ fn request() -> LlmRequest {
         headers: serde_json::Map::new(),
         content: json!({"messages": [], "model": "demo"}),
     }
+}
+
+async fn execute_with_application_context(
+    streaming: bool,
+    context: Option<ApplicationExecutionContext>,
+) -> crate::error::Result<Json> {
+    if streaming {
+        let mut stream = llm_stream_call_execute_with_context(
+            LlmStreamCallExecuteParams::builder()
+                .name("application-context-stream")
+                .request(request())
+                .func(Arc::new(|provider_request| {
+                    Box::pin(async {
+                        Ok(LlmJsonStream::new(tokio_stream::once(Ok(
+                            provider_request.content
+                        ))))
+                    })
+                }))
+                .collector(Box::new(|_| Ok(())))
+                .finalizer(Box::new(|| Json::Null))
+                .build(),
+            context,
+        )
+        .await?;
+        let result = stream.next().await.expect("provider should emit one chunk");
+        stream.close().await?;
+        result
+    } else {
+        llm_call_execute_with_context(
+            LlmCallExecuteParams::builder()
+                .name("application-context-unary")
+                .request(request())
+                .func(Arc::new(|provider_request| {
+                    Box::pin(async { Ok(provider_request.content) })
+                }))
+                .build(),
+            context,
+        )
+        .await
+    }
+}
+
+#[test]
+fn application_execution_context_reaches_only_managed_execution_interceptors() {
+    let _guard = lock_global_runtime();
+    reset_global();
+    set_thread_scope_stack(create_scope_stack());
+
+    let captures = Arc::new(Mutex::new(Vec::new()));
+    let unary_captures = Arc::clone(&captures);
+    register_llm_execution_intercept(
+        "capture-application-context",
+        0,
+        Arc::new(move |_, request, context, next| {
+            unary_captures.lock().unwrap().push((
+                false,
+                context
+                    .execution_context()
+                    .map(ApplicationExecutionContext::to_json),
+            ));
+            next(request)
+        }),
+    )
+    .unwrap();
+    let stream_captures = Arc::clone(&captures);
+    register_llm_stream_execution_intercept(
+        "capture-application-context",
+        0,
+        Arc::new(move |_, request, context, next| {
+            stream_captures.lock().unwrap().push((
+                true,
+                context
+                    .execution_context()
+                    .map(ApplicationExecutionContext::to_json),
+            ));
+            next(request)
+        }),
+    )
+    .unwrap();
+
+    let events = Arc::new(Mutex::new(Vec::<Event>::new()));
+    let captured_events = Arc::clone(&events);
+    register_subscriber(
+        "application-context-events",
+        Arc::new(move |event| {
+            if event.name().starts_with("application-context-") {
+                captured_events.lock().unwrap().push(event.clone());
+            }
+        }),
+    )
+    .unwrap();
+
+    let shapes = [
+        None,
+        Some(json!({})),
+        Some(json!({"data": {}})),
+        Some(json!({"data": {"marker": "execution-context-private"}})),
+    ];
+    let mut expected = Vec::new();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for streaming in [false, true] {
+            for shape in &shapes {
+                let context = shape
+                    .clone()
+                    .map(ApplicationExecutionContext::try_from)
+                    .transpose()
+                    .unwrap();
+                let output = execute_with_application_context(streaming, context)
+                    .await
+                    .unwrap();
+                assert_eq!(output, request().content);
+                expected.push((streaming, shape.clone()));
+            }
+        }
+    });
+
+    flush_subscribers().unwrap();
+    assert!(deregister_subscriber("application-context-events").unwrap());
+    assert!(deregister_llm_execution_intercept("capture-application-context").unwrap());
+    assert!(deregister_llm_stream_execution_intercept("capture-application-context").unwrap());
+    assert_eq!(*captures.lock().unwrap(), expected);
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 2 * expected.len());
+    assert!(events.iter().all(|event| {
+        !serde_json::to_string(event)
+            .unwrap()
+            .contains("execution-context-private")
+    }));
+}
+
+#[test]
+fn application_execution_context_enforces_limits_before_entering_managed_pipeline() {
+    use crate::api::registry::{
+        deregister_llm_conditional_execution_guardrail,
+        register_llm_conditional_execution_guardrail,
+    };
+
+    let _guard = lock_global_runtime();
+    reset_global();
+    set_thread_scope_stack(create_scope_stack());
+
+    let guardrail_calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&guardrail_calls);
+    register_llm_conditional_execution_guardrail(
+        "count-application-context-admissions",
+        0,
+        Arc::new(move |_| {
+            observed.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async { Ok(None) })
+        }),
+    )
+    .unwrap();
+
+    let size_limit = 16 * 1024 - r#"{"data":{"value":""}}"#.len();
+    let to_context = |value| {
+        let mut context = ApplicationExecutionContext::default();
+        context.data = Some([("value".to_owned(), value)].into());
+        context
+    };
+    let nested = |levels| (0..levels).fold(Json::Null, |child, _| Json::Array(vec![child]));
+
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for streaming in [false, true] {
+            // The envelope and its data map account for the outer two container levels.
+            for context in [
+                to_context(json!("x".repeat(size_limit))),
+                to_context(nested(62)),
+            ] {
+                assert_eq!(
+                    execute_with_application_context(streaming, Some(context))
+                        .await
+                        .unwrap(),
+                    request().content
+                );
+            }
+            let calls_before_rejection = guardrail_calls.load(Ordering::Relaxed);
+            for (context, limit) in [
+                (
+                    to_context(json!("x".repeat(size_limit + 1))),
+                    "16384 serialized bytes",
+                ),
+                (to_context(nested(63)), "64 container levels"),
+            ] {
+                let error = execute_with_application_context(streaming, Some(context))
+                    .await
+                    .unwrap_err();
+                assert!(
+                    matches!(error, FlowError::InvalidArgument(message) if message.contains(limit))
+                );
+            }
+            assert_eq!(
+                guardrail_calls.load(Ordering::Relaxed),
+                calls_before_rejection
+            );
+        }
+    });
+    assert!(
+        deregister_llm_conditional_execution_guardrail("count-application-context-admissions")
+            .unwrap()
+    );
+    assert_eq!(guardrail_calls.load(Ordering::Relaxed), 4);
 }
 
 #[test]

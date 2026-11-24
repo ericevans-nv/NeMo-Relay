@@ -5,6 +5,7 @@
 
 import asyncio
 import contextvars
+import json
 import subprocess
 import sys
 import textwrap
@@ -18,6 +19,7 @@ from async_helpers import resolve_async_result
 
 from nemo_relay import (
     AnnotatedLLMRequest,
+    ApplicationExecutionContext,
     Event,
     EventSanitizeFields,
     Json,
@@ -43,9 +45,11 @@ from nemo_relay import (
     llm,
     scope,
     subscribers,
+    typed,
     use_scope_stack,
 )
 from nemo_relay.codecs import OpenAIChatCodec
+from nemo_relay.typed import JsonPassthrough
 
 
 def make_request() -> LLMRequest:
@@ -471,6 +475,151 @@ class TestLLMGuardrails:
         assert result == response
         assert request_codec_used is True
         assert response_codec_used is True
+
+    async def test_llm_application_context_is_snapshotted_and_separate_from_request_and_events(
+        self, subscribed_events: list[Event]
+    ) -> None:
+        request = make_request()
+        caller_data: dict[str, Json] = {"marker": "interceptor-only"}
+        expected = {"data": {"marker": "interceptor-only"}}
+        observed: list[ApplicationExecutionContext | None] = []
+        name = "py_llm_application_context"
+
+        async def edit_context(_name, model_request, context, next_call):
+            snapshot = context.execution_context
+            assert snapshot == expected
+            snapshot["data"]["marker"] = "changed-by-interceptor"
+            assert context.execution_context == expected
+            return await next_call(model_request)
+
+        async def observe_context(_name, model_request, context, next_call):
+            observed.append(context.execution_context)
+            return await next_call(model_request)
+
+        def provider(model_request: LLMRequest) -> Json:
+            assert "interceptor-only" not in json.dumps(model_request.headers)
+            assert model_request.content == request.content
+            return {"complete": True}
+
+        intercepts.register_llm_execution(f"{name}_editor", 1, edit_context)
+        intercepts.register_llm_execution(f"{name}_observer", 2, observe_context)
+        try:
+            pending = llm.execute(
+                name, request, provider, metadata={"event_field": True}, execution_context={"data": caller_data}
+            )
+            caller_data["marker"] = "changed-by-caller"
+            assert await pending == {"complete": True}
+            await subscribers.flush_async()
+        finally:
+            intercepts.deregister_llm_execution(f"{name}_editor")
+            intercepts.deregister_llm_execution(f"{name}_observer")
+
+        assert observed == [expected]
+        start = _llm_event(subscribed_events, name, "start")
+        end = _llm_event(subscribed_events, name, "end")
+        assert start.metadata["event_field"] is True
+        assert start.data["content"] == request.content
+        assert end.data == {"complete": True}
+        for event in (start, end):
+            assert "interceptor-only" not in json.dumps((event.data, event.metadata))
+
+    async def test_typed_llm_application_context_preserves_omission_and_empty_objects(self) -> None:
+        observed: list[ApplicationExecutionContext | None] = []
+        name = "py_typed_llm_application_context"
+
+        async def observe_context(_name, request, context, next_call):
+            observed.append(context.execution_context)
+            return await next_call(request)
+
+        def provider(_request: LLMRequest) -> Json:
+            return {"complete": True}
+
+        intercepts.register_llm_execution(name, 1, observe_context)
+        try:
+            codec = JsonPassthrough()
+            assert await typed.llm_execute(name, make_request(), provider, codec) == {"complete": True}
+            contexts: tuple[ApplicationExecutionContext, ...] = ({}, {"data": {}}, {"data": {"attempt": 1}})
+            for context in contexts:
+                result = await typed.llm_execute(name, make_request(), provider, codec, execution_context=context)
+                assert result == {"complete": True}
+        finally:
+            intercepts.deregister_llm_execution(name)
+
+        assert observed == [None, {}, {"data": {}}, {"data": {"attempt": 1}}]
+
+    @pytest.mark.parametrize("streaming", [False, True])
+    @pytest.mark.parametrize("invalid_context", [{"data": []}, {"data": {"text": "x" * 16_384}}], ids=["shape", "size"])
+    async def test_llm_application_context_rejects_invalid_values_before_middleware(
+        self, streaming: bool, invalid_context: object
+    ) -> None:
+        name = "py_llm_application_context_invalid"
+        context = cast(ApplicationExecutionContext, invalid_context)
+
+        def unexpected_call(*_arguments: object) -> Never:
+            pytest.fail("Invalid application context reached middleware or provider")
+
+        guardrails.register_llm_conditional_execution(name, 1, unexpected_call)
+        try:
+            with pytest.raises(ValueError, match="application execution context"):
+                if streaming:
+                    await llm.stream_execute(
+                        name,
+                        make_request(),
+                        unexpected_call,
+                        unexpected_call,
+                        unexpected_call,
+                        execution_context=context,
+                    )
+                else:
+                    await llm.execute(name, make_request(), unexpected_call, execution_context=context)
+        finally:
+            guardrails.deregister_llm_conditional_execution(name)
+
+    async def test_typed_llm_application_context_survives_stream_until_early_close(self) -> None:
+        name = "py_typed_llm_stream_application_context"
+        supplied: ApplicationExecutionContext = {"data": {"request": "stream"}}
+        producer_closed = asyncio.Event()
+        producer_release = asyncio.Event()
+        collected: list[Json] = []
+        observed: list[LlmExecutionContext] = []
+
+        async def provider(request: LLMRequest) -> AsyncIterator[Json]:
+            assert request.content == make_request().content
+            try:
+                yield {"token": "first"}
+                await producer_release.wait()
+            finally:
+                producer_closed.set()
+
+        async def observe_context(_name, request, context, next_call):
+            downstream = await next_call(request)
+            observed.append(context)
+            return downstream
+
+        intercepts.register_llm_stream_execution(name, 1, observe_context)
+        stream = None
+        try:
+            codec = JsonPassthrough()
+            stream = await typed.llm_stream_execute(
+                name,
+                make_request(),
+                provider,
+                collected.append,
+                lambda: None,
+                codec,
+                codec,
+                execution_context=supplied,
+            )
+            assert await asyncio.wait_for(anext(stream), timeout=2) == {"token": "first"}
+            assert [context.execution_context for context in observed] == [supplied]
+            await asyncio.wait_for(stream.aclose(), timeout=2)
+            assert producer_closed.is_set()
+            assert collected == [{"token": "first"}]
+        finally:
+            producer_release.set()
+            if stream is not None:
+                await stream.aclose()
+            intercepts.deregister_llm_stream_execution(name)
 
     async def test_execution_context_exposes_codec_states_operations_and_lifetime(self) -> None:
         class OpaqueCodec:

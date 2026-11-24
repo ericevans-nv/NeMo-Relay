@@ -96,9 +96,10 @@ pub use nemo_relay_runtime::api::execution::ExecutionOptions;
 /// Managed and manual LLM calls.
 pub mod llm {
     pub use nemo_relay_runtime::api::llm::{
-        ExecutionOptions, LlmCallEndParams, LlmCallExecuteParams, LlmCallParams, LlmHandle,
-        LlmStreamCallExecuteParams, llm_call, llm_call_end, llm_call_execute,
-        llm_conditional_execution, llm_request_intercepts, llm_stream_call_execute,
+        ApplicationExecutionContext, ExecutionOptions, LlmCallEndParams, LlmCallExecuteParams,
+        LlmCallParams, LlmHandle, LlmStreamCallExecuteParams, llm_call, llm_call_end,
+        llm_call_execute, llm_call_execute_with_context, llm_conditional_execution,
+        llm_request_intercepts, llm_stream_call_execute, llm_stream_call_execute_with_context,
     };
     pub use nemo_relay_types::api::llm::*;
 }

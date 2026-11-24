@@ -301,6 +301,7 @@ fn test_ffi_tool_and_llm_parent_utf8_and_shape_paths() {
                 std::ptr::null(),
                 ptr::null(),
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut out
             ),
@@ -337,6 +338,7 @@ fn test_ffi_tool_and_llm_parent_utf8_and_shape_paths() {
                 std::ptr::null(),
                 ptr::null(),
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut stream
             ),

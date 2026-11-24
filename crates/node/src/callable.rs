@@ -701,6 +701,23 @@ fn js_llm_execution_invocation(request: LlmRequest, context: LlmExecutionContext
             None => js_value(env, Null)?,
         };
         execution.set_named_property("responseCodec", response)?;
+        let application_context = application_execution_context_value(
+            env,
+            &context
+                .execution_context()
+                .map(|value| value.to_json())
+                .unwrap_or(Value::Null),
+        )?;
+        // SAFETY: The value was created in this callback's live environment.
+        let application_context = unsafe { application_context.into_unknown(env) };
+        execution.define_properties(&[Property::new()
+            .with_name(env, "executionContext")?
+            .with_value(&application_context)
+            .with_property_attributes(
+                PropertyAttributes::Writable
+                    | PropertyAttributes::Enumerable
+                    | PropertyAttributes::Configurable,
+            )])?;
         args.set(1, detach(env, &execution))?;
         Ok(detach(env, &args))
     })
@@ -1125,13 +1142,13 @@ impl LlmResponseCodec for NapiResponseCodec {
 /// Convert only host execution context using own data properties. The generic
 /// JSON bridge uses setters, which reinterpret a JSON `__proto__` key. Names
 /// are JavaScript strings rather than C strings, preserving embedded NULs.
-fn tool_execution_context_value(env: &Env, value: &Value) -> napi::Result<JsArg> {
+fn application_execution_context_value(env: &Env, value: &Value) -> napi::Result<JsArg> {
     match value {
         Value::Object(fields) => {
             let mut object = Object::new(env)?;
             let mut properties = Vec::with_capacity(fields.len());
             for (name, value) in fields {
-                let value = tool_execution_context_value(env, value)?;
+                let value = application_execution_context_value(env, value)?;
                 // SAFETY: recursion creates every handle in this live callback's environment.
                 let value = unsafe { value.into_unknown(env) };
                 properties.push(
@@ -1156,7 +1173,7 @@ fn tool_execution_context_value(env: &Env, value: &Value) -> napi::Result<JsArg>
             let mut object = array.coerce_to_object()?;
             let mut properties = Vec::with_capacity(values.len());
             for (index, value) in values.iter().enumerate() {
-                let value = tool_execution_context_value(env, value)?;
+                let value = application_execution_context_value(env, value)?;
                 // SAFETY: the value was created above in this callback's live environment.
                 let value = unsafe { value.into_unknown(env) };
                 properties.push(
@@ -1192,7 +1209,7 @@ pub(crate) fn wrap_js_tool_exec_intercept_fn(
                 object.set_named_property("args", context.args().clone())?;
                 object
                     .set_named_property("toolCallId", serde_json::json!(context.tool_call_id()))?;
-                let host_context = tool_execution_context_value(
+                let host_context = application_execution_context_value(
                     env,
                     &context
                         .execution_context()

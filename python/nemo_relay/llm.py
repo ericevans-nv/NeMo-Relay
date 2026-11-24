@@ -64,9 +64,8 @@ from nemo_relay._native import (
 )
 
 if TYPE_CHECKING:
-    from nemo_relay._native import (
-        AnnotatedLLMResponse,
-    )
+    from nemo_relay import ApplicationExecutionContext
+    from nemo_relay._native import AnnotatedLLMResponse
     from nemo_relay.codecs import LlmCodec, LlmResponseCodec
 
 
@@ -216,6 +215,7 @@ def execute(
     codec: LlmCodec | None = None,
     response_codec: LlmResponseCodec | None = None,
     execution_options: ExecutionOptions | None = None,
+    execution_context: ApplicationExecutionContext | None = None,
 ) -> Awaitable[Json]:
     """Run an LLM call through the managed middleware pipeline.
 
@@ -249,6 +249,8 @@ def execute(
             Omit this option to run all stages. Turning off conditional execution
             skips its checks. Relay still sanitizes event data, uses codecs,
             and handles call completion.
+        execution_context: Optional application data for execution intercepts.
+            This context travels separately from the provider request and events.
 
     Returns:
         Json: The raw JSON-compatible value returned by ``func`` or by an
@@ -302,6 +304,7 @@ def execute(
         codec=codec,
         response_codec=response_codec,
         execution_options=execution_options,
+        execution_context=execution_context,
     )
 
 
@@ -320,6 +323,7 @@ def stream_execute(
     codec: LlmCodec | None = None,
     response_codec: LlmResponseCodec | None = None,
     execution_options: ExecutionOptions | None = None,
+    execution_context: ApplicationExecutionContext | None = None,
 ) -> Awaitable[LlmStream]:
     """Run a streaming LLM call through the managed middleware pipeline.
 
@@ -347,6 +351,8 @@ def stream_execute(
             Omit this option to run all stages. Turning off conditional execution
             skips its checks. Relay still sanitizes event data, uses codecs,
             and handles call completion.
+        execution_context: Optional application data for execution intercepts.
+            This context travels separately from the provider request and events.
 
     Returns:
         LlmStream: Async iterator that yields the streamed JSON chunks.
@@ -422,6 +428,7 @@ def stream_execute(
         codec=codec,
         response_codec=response_codec,
         execution_options=execution_options,
+        execution_context=execution_context,
     )
 
 

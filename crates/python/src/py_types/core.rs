@@ -113,7 +113,7 @@ impl PyLlmSanitizeResponseContext {
     }
 }
 
-/// Codec capabilities for one managed LLM execution intercept invocation.
+/// Codec capabilities and application context for one managed LLM execution intercept invocation.
 #[pyclass(name = "LlmExecutionContext", frozen)]
 pub struct PyLlmExecutionContext {
     pub(crate) inner: LlmExecutionContext,
@@ -121,6 +121,15 @@ pub struct PyLlmExecutionContext {
 
 #[pymethods]
 impl PyLlmExecutionContext {
+    /// A fresh copy of the application context supplied for this execution.
+    #[getter]
+    fn execution_context(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.inner
+            .execution_context()
+            .map(|value| json_to_py(py, &value.to_json()))
+            .transpose()
+    }
+
     /// Request codec identity and optional decode/encode capability.
     #[getter]
     fn request_codec(&self) -> PyLlmRequestContext {

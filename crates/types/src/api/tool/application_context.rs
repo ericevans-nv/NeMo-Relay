@@ -33,13 +33,13 @@ static VALIDATOR: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ApplicationExecutionContextError {
     /// The value does not conform to the concrete context envelope schema.
-    #[error("tool execution context does not match ApplicationExecutionContext JSON Schema")]
+    #[error("application execution context does not match ApplicationExecutionContext JSON Schema")]
     InvalidSchema,
     /// Nesting is bounded before serialization, cloning or schema traversal.
-    #[error("tool execution context exceeds 64 container levels (root object is level 1)")]
+    #[error("application execution context exceeds 64 container levels (root object is level 1)")]
     TooDeep,
     /// The entire object, including application data, exceeds the shared byte budget.
-    #[error("tool execution context exceeds 16384 serialized bytes")]
+    #[error("application execution context exceeds 16384 serialized bytes")]
     TooLarge,
 }
 

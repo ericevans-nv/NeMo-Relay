@@ -129,6 +129,7 @@ impl InvocationFixture {
                         continuation_id: self.continuation_id,
                         request_codec: contexts.request,
                         response_codec: contexts.response,
+                        execution_context: None,
                     })
                 }
                 _ => return Err(missing("matching LLM surface")),
@@ -165,6 +166,7 @@ impl InvocationFixture {
             request: v.request,
             continuation_id: self.continuation_id,
             request_codec: contexts.request,
+            execution_context: None,
         })
     }
 }

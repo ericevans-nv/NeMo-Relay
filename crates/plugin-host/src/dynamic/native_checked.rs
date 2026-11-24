@@ -1334,11 +1334,37 @@ struct Call {
     response: Option<LlmResponseContext>,
     next: Option<Next>,
 }
+fn application_execution_context_to_abi(
+    application_execution_context: &nemo_relay_types::api::tool::ApplicationExecutionContext,
+) -> a::ApplicationExecutionContext {
+    a::ApplicationExecutionContext {
+        data: application_execution_context.data.as_ref().map(|data| {
+            data.iter()
+                .map(|(key, value)| abi::Field {
+                    key: key.clone(),
+                    value: to_abi(value),
+                })
+                .collect()
+        }),
+    }
+}
+
 /// Invoke checked middleware with scoped runtime authority and optional downstream continuation.
 async fn unary<T: DeserializeOwned>(
     owner: Arc<HostRuntime>,
     callback: Arc<CallbackOwner>,
     call: Call,
+) -> Result<T> {
+    unary_with_execution_context(owner, callback, call, None).await
+}
+
+async fn unary_with_execution_context<T: DeserializeOwned>(
+    owner: Arc<HostRuntime>,
+    callback: Arc<CallbackOwner>,
+    call: Call,
+    application_execution_context: Option<
+        &nemo_relay_types::api::tool::ApplicationExecutionContext,
+    >,
 ) -> Result<T> {
     let Call {
         surface,
@@ -1350,7 +1376,10 @@ async fn unary<T: DeserializeOwned>(
         next,
     } = call;
     owner.ensure()?;
-    let (invocation, _lifetime) = invocation(&owner, surface, name, value, id, request, response);
+    let (mut invocation, _lifetime) =
+        invocation(&owner, surface, name, value, id, request, response);
+    invocation.execution_context =
+        application_execution_context.map(application_execution_context_to_abi);
     let (_lease, _guard) = MiddlewareContinuationLease::capture();
     let downstream = DownstreamErrors::default();
     let next = next.map(|next| {
@@ -1635,19 +1664,9 @@ pub fn apply_registration(
                         None,
                         None,
                     );
-                    i.execution_context =
-                        context
-                            .execution_context()
-                            .map(|context| a::ApplicationExecutionContext {
-                                data: context.data.as_ref().map(|data| {
-                                    data.iter()
-                                        .map(|(key, value)| abi::Field {
-                                            key: key.clone(),
-                                            value: to_abi(value),
-                                        })
-                                        .collect()
-                                }),
-                            });
+                    i.execution_context = context
+                        .execution_context()
+                        .map(application_execution_context_to_abi);
                     let (lease, _guard) = MiddlewareContinuationLease::capture();
                     let downstream = DownstreamErrors::default();
                     let next = a::ContinuationBox::new(Continuation {
@@ -1781,7 +1800,7 @@ pub fn apply_registration(
                 let owner = owner.clone();
                 let callback = callback.clone();
                 Box::pin(async move {
-                    unary(
+                    unary_with_execution_context(
                         owner,
                         callback,
                         Call {
@@ -1793,6 +1812,7 @@ pub fn apply_registration(
                             response: context.response_codec().cloned(),
                             next: Some(Next::Llm(next)),
                         },
+                        context.execution_context(),
                     )
                     .await
                 })
@@ -1808,7 +1828,7 @@ pub fn apply_registration(
                 let callback = callback.clone();
                 Box::pin(async move {
                     owner.ensure()?;
-                    let (invocation, life) = invocation(
+                    let (mut invocation, life) = invocation(
                         &owner,
                         surface,
                         name,
@@ -1817,6 +1837,9 @@ pub fn apply_registration(
                         Some(context.request_codec().clone()),
                         None,
                     );
+                    invocation.execution_context = context
+                        .execution_context()
+                        .map(application_execution_context_to_abi);
                     let (lease, guard) = MiddlewareContinuationLease::capture();
                     let downstream = DownstreamErrors::default();
                     let next = a::ContinuationBox::new(Continuation {

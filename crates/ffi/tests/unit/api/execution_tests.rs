@@ -503,6 +503,7 @@ fn test_ffi_llm_execute_codec_parent_and_error_paths() {
                 std::ptr::null(),
                 ptr::null(),
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut out_json
             ),
@@ -531,6 +532,7 @@ fn test_ffi_llm_execute_codec_parent_and_error_paths() {
                 std::ptr::null(),
                 ptr::null(),
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut out_json
             ),
@@ -555,6 +557,7 @@ fn test_ffi_llm_execute_codec_parent_and_error_paths() {
                 std::ptr::null(),
                 ptr::null(),
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut out_json
             ),
@@ -579,6 +582,7 @@ fn test_ffi_llm_execute_codec_parent_and_error_paths() {
                 std::ptr::null(),
                 ptr::null(),
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut out_json
             ),
@@ -641,6 +645,7 @@ fn test_ffi_llm_stream_execute_response_codec_defaults_and_error_paths() {
                 std::ptr::null(),
                 response_codec,
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut stream
             ),
@@ -680,6 +685,7 @@ fn test_ffi_llm_stream_execute_response_codec_defaults_and_error_paths() {
                 std::ptr::null(),
                 response_codec,
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut stream
             ),
@@ -709,6 +715,7 @@ fn test_ffi_llm_stream_execute_response_codec_defaults_and_error_paths() {
                 std::ptr::null(),
                 response_codec,
                 0,
+                ptr::null(),
                 std::ptr::null(),
                 &mut stream
             ),
@@ -1274,9 +1281,214 @@ unsafe extern "C" fn execution_options_count_free(user_data: *mut libc::c_void) 
     count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// Check that invalid LLM options and mismatched codecs release each callback resource once.
+type LlmApplicationContextCaptures = Mutex<Vec<(String, Option<String>)>>;
+
+unsafe extern "C" fn drop_llm_application_context_captures(user_data: *mut libc::c_void) {
+    drop(unsafe { Arc::from_raw(user_data.cast::<LlmApplicationContextCaptures>()) });
+}
+
+unsafe extern "C" fn capture_llm_application_execution_context(
+    user_data: *mut libc::c_void,
+    _name: *const c_char,
+    request_json: *const c_char,
+    context: NemoRelayLlmExecutionContext,
+    next: NemoRelayLlmExecNextFn,
+    next_context: *mut libc::c_void,
+) -> *mut c_char {
+    unsafe { record_llm_application_execution_context(user_data, request_json, &context) };
+    unsafe { next(request_json, next_context) }
+}
+
+unsafe extern "C" fn capture_stream_llm_application_execution_context(
+    user_data: *mut libc::c_void,
+    _name: *const c_char,
+    request_json: *const c_char,
+    context: NemoRelayLlmExecutionContext,
+    next: callable::NemoRelayLlmStreamExecNextFn,
+    next_context: *mut libc::c_void,
+) -> *mut FfiLlmStreamSource {
+    unsafe { record_llm_application_execution_context(user_data, request_json, &context) };
+    unsafe { next(request_json, next_context) }
+}
+
+unsafe fn record_llm_application_execution_context(
+    user_data: *mut libc::c_void,
+    request_json: *const c_char,
+    context: &NemoRelayLlmExecutionContext,
+) {
+    let captures = unsafe { &*user_data.cast::<LlmApplicationContextCaptures>() };
+    let context = context.execution_context_json;
+    let context = (!context.is_null()).then(|| {
+        unsafe { CStr::from_ptr(context) }
+            .to_string_lossy()
+            .into_owned()
+    });
+    let request = unsafe { CStr::from_ptr(request_json) }
+        .to_string_lossy()
+        .into_owned();
+    captures
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push((request, context));
+}
+
 #[test]
-fn llm_execution_options_release_resources_on_validation_failure() {
+fn llm_execution_context_c_callbacks_preserve_unary_and_streaming_payloads() {
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+    reset_globals();
+
+    let captured = Arc::new(LlmApplicationContextCaptures::default());
+    unsafe {
+        let scope_stack = fresh_scope_stack();
+        let interceptor_name = cstring(&unique_name("ffi-llm-application-context"));
+        let stream_source_interceptor_name =
+            cstring(&unique_name("ffi-llm-stream-source-application-context"));
+        assert_status!(
+            nemo_relay_register_llm_execution_intercept(
+                interceptor_name.as_ptr(),
+                0,
+                capture_llm_application_execution_context,
+                Arc::into_raw(Arc::clone(&captured)).cast_mut().cast(),
+                Some(drop_llm_application_context_captures),
+            ),
+            NemoRelayStatus::Ok
+        );
+        assert_status!(
+            nemo_relay_register_llm_stream_execution_intercept(
+                interceptor_name.as_ptr(),
+                0,
+                Some(capture_llm_application_execution_context),
+                None,
+                Arc::into_raw(Arc::clone(&captured)).cast_mut().cast(),
+                Some(drop_llm_application_context_captures),
+            ),
+            NemoRelayStatus::Ok
+        );
+        assert_status!(
+            nemo_relay_register_llm_stream_execution_intercept(
+                stream_source_interceptor_name.as_ptr(),
+                1,
+                None,
+                Some(capture_stream_llm_application_execution_context),
+                Arc::into_raw(Arc::clone(&captured)).cast_mut().cast(),
+                Some(drop_llm_application_context_captures),
+            ),
+            NemoRelayStatus::Ok
+        );
+
+        let name = cstring("ffi-llm-application-context");
+        let request = cstring(r#"{"headers":{},"content":{"model":"context-model"}}"#);
+        let shapes = [
+            Some(r#"{"data":{"marker":"middleware-only"}}"#),
+            Some("{}"),
+            Some(r#"{"data":{}}"#),
+            None,
+        ];
+        for supplied in shapes {
+            let context = supplied.map(cstring);
+            let context_pointer = context.as_ref().map_or(ptr::null(), |value| value.as_ptr());
+            let mut response = ptr::null_mut();
+            assert_status!(
+                nemo_relay_llm_call_execute(
+                    name.as_ptr(),
+                    request.as_ptr(),
+                    llm_exec_cb,
+                    ptr::null_mut(),
+                    None,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    None,
+                    None,
+                    ptr::null_mut(),
+                    None,
+                    ptr::null(),
+                    ptr::null(),
+                    0,
+                    context_pointer,
+                    ptr::null(),
+                    &mut response,
+                ),
+                NemoRelayStatus::Ok
+            );
+            assert_eq!(returned_json(response)["model_seen"], "context-model");
+
+            let mut stream = ptr::null_mut();
+            assert_status!(
+                nemo_relay_llm_stream_call_execute(
+                    name.as_ptr(),
+                    request.as_ptr(),
+                    Some(llm_exec_cb),
+                    None,
+                    ptr::null_mut(),
+                    None,
+                    None,
+                    None,
+                    ptr::null_mut(),
+                    None,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    None,
+                    None,
+                    ptr::null_mut(),
+                    None,
+                    ptr::null(),
+                    ptr::null(),
+                    0,
+                    context_pointer,
+                    ptr::null(),
+                    &mut stream,
+                ),
+                NemoRelayStatus::Ok
+            );
+            let mut chunk = ptr::null_mut();
+            let read_status = nemo_relay_stream_next(stream, &mut chunk);
+            let close_status = nemo_relay_stream_close(stream);
+            nemo_relay_stream_free(stream);
+            assert_eq!(read_status, 1);
+            assert_eq!(returned_json(chunk)["model_seen"], "context-model");
+            assert_status!(close_status, NemoRelayStatus::Ok);
+        }
+
+        assert_status!(
+            nemo_relay_deregister_llm_stream_execution_intercept(interceptor_name.as_ptr()),
+            NemoRelayStatus::Ok
+        );
+        assert_status!(
+            nemo_relay_deregister_llm_stream_execution_intercept(
+                stream_source_interceptor_name.as_ptr()
+            ),
+            NemoRelayStatus::Ok
+        );
+        assert_status!(
+            nemo_relay_deregister_llm_execution_intercept(interceptor_name.as_ptr()),
+            NemoRelayStatus::Ok
+        );
+        nemo_relay_scope_stack_free(scope_stack);
+
+        let captures = captured.lock().unwrap();
+        let expected_request = serde_json::from_str::<Json>(request.to_str().unwrap()).unwrap();
+        let expected_contexts = shapes.into_iter().flat_map(|context| [context; 3]);
+        assert_eq!(captures.len(), shapes.len() * 3);
+        for ((request, received), expected) in captures.iter().zip(expected_contexts) {
+            assert_eq!(
+                serde_json::from_str::<Json>(request).unwrap()["content"],
+                expected_request["content"]
+            );
+            assert!(!request.contains("middleware-only"));
+            assert_eq!(received.as_deref(), expected);
+        }
+    }
+}
+
+/// Check that invalid execution input releases each callback resource once.
+#[test]
+fn llm_execution_context_and_options_release_resources_on_validation_failure() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -1285,11 +1497,19 @@ fn llm_execution_options_release_resources_on_validation_failure() {
         let stack = fresh_scope_stack();
         let name = cstring("ffi-llm-options");
         let request = cstring(r#"{"headers":{},"content":{"model":"test"}}"#);
+        let invalid_context = cstring(r#"{"data":[]}"#);
         for streaming in [false, true] {
-            for (decode, encode, skip_stages, message) in [
-                (true, true, 8, "skip-stage"),
-                (true, false, 0, "both be provided"),
-                (false, true, 0, "both be provided"),
+            for (decode, encode, skip_stages, context, message) in [
+                (true, true, 8, ptr::null(), "skip-stage"),
+                (true, false, 0, ptr::null(), "both be provided"),
+                (false, true, 0, ptr::null(), "both be provided"),
+                (
+                    true,
+                    true,
+                    0,
+                    invalid_context.as_ptr(),
+                    "application execution context",
+                ),
             ] {
                 let func_frees = AtomicUsize::new(0);
                 let codec_frees = AtomicUsize::new(0);
@@ -1326,6 +1546,7 @@ fn llm_execution_options_release_resources_on_validation_failure() {
                         std::ptr::null(),
                         ptr::null(),
                         skip_stages,
+                        context,
                         std::ptr::null(),
                         &mut out,
                     );
@@ -1351,6 +1572,7 @@ fn llm_execution_options_release_resources_on_validation_failure() {
                         std::ptr::null(),
                         ptr::null(),
                         skip_stages,
+                        context,
                         std::ptr::null(),
                         &mut out,
                     );

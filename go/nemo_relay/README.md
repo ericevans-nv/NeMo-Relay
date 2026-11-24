@@ -114,6 +114,12 @@ over 16 KiB of serialized JSON, and nesting beyond 64 container levels before
 middleware or execution. Manual `ToolCall` and `ToolCallEnd` reject this option.
 Build the matching C FFI library when updating this source-first binding.
 
+For managed LLM calls, pass `WithLLMApplicationExecutionContext` to
+`LlmCallExecute` or `LlmStreamCallExecute`. Unary and streaming execution
+intercepts receive their own copies through `context.ExecutionContext`.
+The provider receives the model request separately. Manual `LlmCall` and
+`LlmCallEnd` reject the option.
+
 ## LLM Codecs and Child Scope Stacks
 
 Use `WithLLMCodec` with an owned built-in codec handle or a custom `CodecFunc`.

@@ -44,7 +44,9 @@ typedef NemoRelayLlmSanitizeResponseContext NemoRelayLlmResponseContext;
 typedef struct FfiLlmOptimizationRecorder FfiLlmOptimizationRecorder;
 typedef struct NemoRelayLlmExecutionContext {
 	NemoRelayLlmRequestContext request_codec;
-	const NemoRelayLlmResponseContext* response_codec; const FfiLlmOptimizationRecorder* optimization_recorder;
+	const NemoRelayLlmResponseContext* response_codec;
+	const FfiLlmOptimizationRecorder* optimization_recorder;
+	const char* execution_context_json;
 } NemoRelayLlmExecutionContext;
 
 extern int32_t nemo_relay_llm_handle_retain_optimization_recorder(const FfiLLMHandle*, FfiLlmOptimizationRecorder**);
@@ -317,13 +319,15 @@ type LLMResponseContext = LLMSanitizeResponseContext
 // LLMExecutionContext gives an LLM execution intercept access to codecs and
 // optimization recording for the current call. RequestCodec is always present.
 // ResponseCodec is available for unary execution and nil for streaming execution.
-// All capabilities expire when the callback returns.
+// All capabilities expire when the callback returns. ExecutionContext is an
+// independent copy of the application envelope, when supplied.
 type LLMExecutionContext struct {
-	callContext   context.Context
-	recorder      unsafe.Pointer
-	invocation    *llmSanitizeCodecInvocation
-	RequestCodec  LLMRequestContext
-	ResponseCodec *LLMResponseContext
+	ExecutionContext *ApplicationExecutionContext
+	callContext      context.Context
+	recorder         unsafe.Pointer
+	invocation       *llmSanitizeCodecInvocation
+	RequestCodec     LLMRequestContext
+	ResponseCodec    *LLMResponseContext
 }
 
 // ResolveCodec returns the active callback-scoped response codec, if any.
@@ -1067,6 +1071,17 @@ func goToolExecInterceptTrampoline(userData unsafe.Pointer, contextJSON *C.char,
 	return relayCallbackString(string(outcomeJSON))
 }
 
+func decodeLLMApplicationExecutionContext(value *C.char) (*ApplicationExecutionContext, error) {
+	if value == nil {
+		return nil, nil
+	}
+	var context ApplicationExecutionContext
+	if err := json.Unmarshal([]byte(C.GoString(value)), &context); err != nil {
+		return nil, fmt.Errorf("invalid application execution context: %w", err)
+	}
+	return &context, nil
+}
+
 //export goLlmExecInterceptTrampoline
 func goLlmExecInterceptTrampoline(userData unsafe.Pointer, name *C.char, nativeJSON *C.char, context C.NemoRelayLlmExecutionContext, nextFn C.NemoRelayLlmExecNextFn, nextCtx unsafe.Pointer) (cResult *C.char) {
 	defer recoverCallbackPanic("LLM execution intercept", func() { cResult = nil })
@@ -1076,9 +1091,16 @@ func goLlmExecInterceptTrampoline(userData unsafe.Pointer, name *C.char, nativeJ
 	goJSON := json.RawMessage(C.GoString(nativeJSON))
 	invocation := newLLMSanitizeCodecInvocation()
 	defer invocation.invalidate()
+	applicationExecutionContext, err := decodeLLMApplicationExecutionContext(context.execution_context_json)
+	if err != nil {
+		setCallbackError(err)
+		return nil
+	}
 	goContext := LLMExecutionContext{
-		recorder: unsafe.Pointer(context.optimization_recorder), invocation: invocation,
-		RequestCodec: llmSanitizeRequestContextFromC(context.request_codec, invocation),
+		recorder:         unsafe.Pointer(context.optimization_recorder),
+		invocation:       invocation,
+		RequestCodec:     llmSanitizeRequestContextFromC(context.request_codec, invocation),
+		ExecutionContext: applicationExecutionContext,
 	}
 	if context.response_codec != nil {
 		responseCodec := llmSanitizeResponseContextFromC(*context.response_codec, invocation)
@@ -1270,7 +1292,18 @@ func goLlmStreamInterceptTrampoline(data unsafe.Pointer, name *C.char, request *
 	}
 	invocation := newLLMSanitizeCodecInvocation()
 	defer invocation.invalidate()
-	goContext := LLMExecutionContext{callContext: callContext, recorder: unsafe.Pointer(context.optimization_recorder), invocation: invocation, RequestCodec: llmSanitizeRequestContextFromC(context.request_codec, invocation)}
+	applicationExecutionContext, err := decodeLLMApplicationExecutionContext(context.execution_context_json)
+	if err != nil {
+		setCallbackError(err)
+		return nil
+	}
+	goContext := LLMExecutionContext{
+		callContext:      callContext,
+		recorder:         unsafe.Pointer(context.optimization_recorder),
+		invocation:       invocation,
+		RequestCodec:     llmSanitizeRequestContextFromC(context.request_codec, invocation),
+		ExecutionContext: applicationExecutionContext,
+	}
 	retained, err := callPointer(func() *C.FfiLlmStreamContinuation {
 		return C.nemo_relay_stream_continuation_retain((*C.FfiLlmStreamContinuation)(nextContext))
 	})

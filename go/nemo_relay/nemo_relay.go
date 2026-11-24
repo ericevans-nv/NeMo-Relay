@@ -56,7 +56,7 @@ typedef struct NemoRelayLlmSanitizeResponseContext { uint32_t codec_kind; const 
 typedef NemoRelayLlmSanitizeRequestContext NemoRelayLlmRequestContext;
 typedef NemoRelayLlmSanitizeResponseContext NemoRelayLlmResponseContext;
 typedef struct FfiLlmOptimizationRecorder FfiLlmOptimizationRecorder;
-typedef struct NemoRelayLlmExecutionContext { NemoRelayLlmRequestContext request_codec; const NemoRelayLlmResponseContext* response_codec; const FfiLlmOptimizationRecorder* optimization_recorder; } NemoRelayLlmExecutionContext;
+typedef struct NemoRelayLlmExecutionContext { NemoRelayLlmRequestContext request_codec; const NemoRelayLlmResponseContext* response_codec; const FfiLlmOptimizationRecorder* optimization_recorder; const char* execution_context_json; } NemoRelayLlmExecutionContext;
 
 typedef struct FfiLlmStreamSource FfiLlmStreamSource;
 typedef FfiLlmStreamSource* (*NemoRelayLlmStreamExecCb)(void*, const char*);
@@ -113,7 +113,7 @@ extern int32_t nemo_relay_llm_call_execute(
 	const char* model_name,
 	NemoRelayCodecDecodeFn codec_decode, NemoRelayCodecEncodeFn codec_encode,
 	void* codec_user_data, NemoRelayFreeFn codec_free_fn,
-	const FfiCodecHandle* request_codec, const FfiCodecHandle* response_codec, uint32_t skip_stages, const FfiCancellation* cancellation,
+	const FfiCodecHandle* request_codec, const FfiCodecHandle* response_codec, uint32_t skip_stages, const char* execution_context_json, const FfiCancellation* cancellation,
 	char** out);
 
 // LLM stream execute
@@ -127,7 +127,7 @@ extern int32_t nemo_relay_llm_stream_call_execute(
 	const char* model_name,
 	NemoRelayCodecDecodeFn codec_decode, NemoRelayCodecEncodeFn codec_encode,
 	void* codec_user_data, NemoRelayFreeFn codec_free_fn,
-	const FfiCodecHandle* request_codec, const FfiCodecHandle* response_codec, uint32_t skip_stages, const FfiCancellation* cancellation,
+	const FfiCodecHandle* request_codec, const FfiCodecHandle* response_codec, uint32_t skip_stages, const char* execution_context_json, const FfiCancellation* cancellation,
 	FfiStream** out);
 
 // Built-in codec constructor
@@ -1546,30 +1546,33 @@ func ToolCallExecute(name string, args json.RawMessage, fn ToolExecutionFunc, op
 // ---------------------------------------------------------------------------
 
 type llmCallOptions struct {
-	requestCodecErr      error
-	responseCodecErr     error
-	annotatedRequestErr  error
-	annotatedResponseErr error
-	ctx                  context.Context
-	executionOptions     ExecutionOptions
-	hasExecutionOptions  bool
-	parentHandle         *ScopeHandle // retains the borrowed native handle through the FFI call
-	parent               *C.FfiScopeHandle
-	attributes           uint32
-	data                 *C.char
-	metadata             *C.char
-	modelName            *C.char
-	timestamp            *C.int64_t
-	requestCodec         *C.FfiCodecHandle
-	requestCodecHandle   *CodecHandle
-	annotatedRequest     *C.char
-	annotatedResponse    *C.char
-	codecDecode          C.NemoRelayCodecDecodeFn
-	codecEncode          C.NemoRelayCodecEncodeFn
-	codecUserData        unsafe.Pointer
-	codecFreeFn          C.NemoRelayFreeFn
-	responseCodec        *C.FfiCodecHandle
-	responseCodecHandle  *CodecHandle // prevents GC of the CodecHandle during FFI calls
+	executionContext      []byte
+	executionContextError error
+	hasExecutionContext   bool
+	requestCodecErr       error
+	responseCodecErr      error
+	annotatedRequestErr   error
+	annotatedResponseErr  error
+	ctx                   context.Context
+	executionOptions      ExecutionOptions
+	hasExecutionOptions   bool
+	parentHandle          *ScopeHandle // retains the borrowed native handle through the FFI call
+	parent                *C.FfiScopeHandle
+	attributes            uint32
+	data                  *C.char
+	metadata              *C.char
+	modelName             *C.char
+	timestamp             *C.int64_t
+	requestCodec          *C.FfiCodecHandle
+	requestCodecHandle    *CodecHandle
+	annotatedRequest      *C.char
+	annotatedResponse     *C.char
+	codecDecode           C.NemoRelayCodecDecodeFn
+	codecEncode           C.NemoRelayCodecEncodeFn
+	codecUserData         unsafe.Pointer
+	codecFreeFn           C.NemoRelayFreeFn
+	responseCodec         *C.FfiCodecHandle
+	responseCodecHandle   *CodecHandle // prevents GC of the CodecHandle during FFI calls
 }
 
 // LLMCallOption is a functional option that configures optional parameters for
@@ -1577,10 +1580,27 @@ type llmCallOptions struct {
 // [LlmStreamCallExecute], [LlmConditionalExecution]). Available options include
 // [WithLLMParent], [WithLLMAttributes], [WithLLMData], [WithLLMMetadata],
 // [WithLLMModelName], [WithLLMCodec], [WithLLMResponseCodec],
-// [WithLLMAnnotatedRequest], [WithLLMAnnotatedResponse], and [WithLLMTimestamp].
+// [WithLLMAnnotatedRequest], [WithLLMAnnotatedResponse],
+// [WithLLMApplicationExecutionContext], and [WithLLMTimestamp].
 // [WithLLMTimestamp] affects manual [LlmCall] and
 // [LlmCallEnd] spans only; managed execute spans use runtime-generated timestamps.
 type LLMCallOption func(*llmCallOptions)
+
+// WithLLMApplicationExecutionContext snapshots application context for managed
+// unary and streaming LLM calls. A nil pointer omits context. Validation errors
+// are returned before execution interceptors or the provider are called.
+func WithLLMApplicationExecutionContext(context *ApplicationExecutionContext) LLMCallOption {
+	var snapshot []byte
+	var failure error
+	if context != nil {
+		snapshot, failure = marshalApplicationContext(*context)
+	}
+	return func(options *llmCallOptions) {
+		options.executionContext = snapshot
+		options.executionContextError = failure
+		options.hasExecutionContext = true
+	}
+}
 
 // WithLLMParent sets the parent scope handle for an LLM call. If not provided,
 // the LLM call is associated with the scope currently at the top of the stack.
@@ -2008,6 +2028,9 @@ func LlmCall(name string, request LLMRequest, opts ...LLMCallOption) (*LLMHandle
 	if o.hasExecutionOptions {
 		return nil, fmt.Errorf("execution options require a managed LLM execute call")
 	}
+	if o.hasExecutionContext {
+		return nil, errors.New("application execution context requires a managed LLM execute call")
+	}
 
 	requestJSON, err := jsonMarshal(request.withDefaults())
 	if err != nil {
@@ -2057,6 +2080,9 @@ func LlmCallEnd(handle *LLMHandle, response json.RawMessage, opts ...LLMCallOpti
 	if o.hasExecutionOptions {
 		return fmt.Errorf("execution options require a managed LLM execute call")
 	}
+	if o.hasExecutionContext {
+		return errors.New("application execution context requires a managed LLM execute call")
+	}
 
 	cResponse := C.CString(string(response))
 	defer C.free(unsafe.Pointer(cResponse))
@@ -2084,7 +2110,7 @@ func LlmCallExecute(name string, request LLMRequest, fn LLMExecutionFunc, opts .
 	defer runtime.KeepAlive(o.requestCodecHandle)
 	defer runtime.KeepAlive(o.responseCodecHandle)
 	defer freeLLMOpts(o)
-	if err := errors.Join(o.requestCodecErr, o.responseCodecErr, o.annotatedRequestErr, o.annotatedResponseErr); err != nil {
+	if err := errors.Join(o.requestCodecErr, o.responseCodecErr, o.annotatedRequestErr, o.annotatedResponseErr, o.executionContextError); err != nil {
 		return nil, err
 	}
 
@@ -2105,6 +2131,8 @@ func LlmCallExecute(name string, request LLMRequest, fn LLMExecutionFunc, opts .
 
 	id := registerClosure(fn)
 
+	executionContext := optionalCString(string(o.executionContext))
+	defer C.free(unsafe.Pointer(executionContext))
 	cName := C.CString(name)
 	cRequest := C.CString(string(requestJSON))
 	defer C.free(unsafe.Pointer(cName))
@@ -2123,7 +2151,7 @@ func LlmCallExecute(name string, request LLMRequest, fn LLMExecutionFunc, opts .
 			o.codecDecode, o.codecEncode,
 			o.codecUserData, o.codecFreeFn,
 			o.requestCodec, o.responseCodec,
-			o.executionOptions.skipStages(), cancellation, &out,
+			o.executionOptions.skipStages(), executionContext, cancellation, &out,
 		)
 	})
 	o.codecUserData = nil
@@ -2162,7 +2190,7 @@ func LlmStreamCallExecute(name string, request LLMRequest, fn LLMStreamExecution
 	defer runtime.KeepAlive(o.requestCodecHandle)
 	defer runtime.KeepAlive(o.responseCodecHandle)
 	defer freeLLMOpts(o)
-	if err := errors.Join(o.requestCodecErr, o.responseCodecErr, o.annotatedRequestErr, o.annotatedResponseErr); err != nil {
+	if err := errors.Join(o.requestCodecErr, o.responseCodecErr, o.annotatedRequestErr, o.annotatedResponseErr, o.executionContextError); err != nil {
 		return nil, err
 	}
 
@@ -2201,6 +2229,8 @@ func LlmStreamCallExecute(name string, request LLMRequest, fn LLMStreamExecution
 	defer runtime.KeepAlive(sources)
 	id := registerClosure(weak.Make(sources.factory))
 
+	executionContext := optionalCString(string(o.executionContext))
+	defer C.free(unsafe.Pointer(executionContext))
 	cName := C.CString(name)
 	cRequest := C.CString(string(requestJSON))
 	defer C.free(unsafe.Pointer(cName))
@@ -2236,7 +2266,7 @@ func LlmStreamCallExecute(name string, request LLMRequest, fn LLMStreamExecution
 			o.codecDecode, o.codecEncode,
 			o.codecUserData, o.codecFreeFn,
 			o.requestCodec, o.responseCodec,
-			o.executionOptions.skipStages(), cancellation, &out,
+			o.executionOptions.skipStages(), executionContext, cancellation, &out,
 		)
 	})
 	o.codecUserData = nil

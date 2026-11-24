@@ -366,7 +366,7 @@ fn register_fixture_llm_stream_execution(
 ) -> nemo_relay_plugin::Result<()> {
     ctx.register_llm_stream_execution_intercept("fixture_llm_stream_execution", 0, {
         let runtime = runtime.clone();
-        move |_name, request, _context, next| {
+        move |_name, request, context, next| {
             let runtime = runtime.clone();
             async move {
                 if request.content["native_http_error"].as_bool() == Some(true) {
@@ -399,11 +399,16 @@ fn register_fixture_llm_stream_execution(
                 } else {
                     Json::Null
                 };
+                let application_context = context.execution_context().map(|value| value.to_json());
                 let stream: LlmJsonAsyncStream = Box::pin(stream.then(move |chunk| {
                     let runtime = runtime.clone();
                     let snapshot = snapshot.clone();
+                    let application_context = application_context.clone();
                     async move {
                         let mut chunk = mark_json(chunk?, "native_plugin_llm_stream_execution");
+                        if let Some(context) = application_context {
+                            chunk["fixture_context"] = context;
+                        }
                         if inspect_snapshot {
                             tokio::task::yield_now().await;
                             chunk["scope_stack_snapshot"] = snapshot;
@@ -801,7 +806,7 @@ fn register_fixture_llm_guardrails(
     )?;
     ctx.register_llm_execution_intercept("fixture_llm_execution", 0, {
         let runtime = runtime.clone();
-        move |_name, request, _context, next| {
+        move |_name, request, context, next| {
             let runtime = runtime.clone();
             async move {
                 if request.content["native_http_error"].as_bool() == Some(true) {
@@ -819,6 +824,9 @@ fn register_fixture_llm_guardrails(
                     ))
                     .await?;
                 let mut response = mark_json(response, "native_plugin_llm_execution");
+                if let Some(context) = context.execution_context() {
+                    response["fixture_context"] = context.to_json();
+                }
                 if inspect_snapshot {
                     tokio::task::yield_now().await;
                     response["scope_stack_snapshot"] =

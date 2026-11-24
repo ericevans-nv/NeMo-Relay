@@ -592,7 +592,7 @@ fn invocation_codec_adapters_preserve_typed_values_and_missing_capabilities() {
         }
     }
     let codec = |response| Option::Some(a::CodecBox::new(Codec(response)));
-    let context = LlmExecutionContext::new(codec(false), codec(true)).unwrap();
+    let context = LlmExecutionContext::new(codec(false), codec(true), None).unwrap();
     assert_eq!(context.request_codec().codec, LlmCodecIdentity::Opaque);
     assert_eq!(
         context.response_codec().unwrap().codec,
@@ -617,7 +617,7 @@ fn invocation_codec_adapters_preserve_typed_values_and_missing_capabilities() {
     assert!(request_context.resolve_codec().is_some());
     let response_context = LlmSanitizeResponseContext::new(codec(true)).unwrap();
     assert!(response_context.resolve_codec().is_some());
-    let missing = LlmExecutionContext::new(Option::None, Option::None).unwrap();
+    let missing = LlmExecutionContext::new(Option::None, Option::None, None).unwrap();
     assert_eq!(missing.request_codec().codec, LlmCodecIdentity::None);
     assert!(missing.request_codec().resolve_codec().is_none());
     assert!(missing.response_codec().is_none());

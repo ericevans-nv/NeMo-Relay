@@ -2304,7 +2304,11 @@ pub fn llm_call_execute<'env>(
         Callback,
     >,
     execution_options: Option<ExecutionOptions>,
+    #[napi(ts_arg_type = "ApplicationExecutionContext | null")] execution_context: Option<
+        Unknown<'env>,
+    >,
 ) -> Result<PromiseRaw<'env, Json>> {
+    let application_execution_context = execution_context_json(execution_context)?;
     let request: LlmRequest = parse_json(request.0, "LlmRequest")?;
     let func = scoped_fn(
         env,
@@ -2327,6 +2331,7 @@ pub fn llm_call_execute<'env>(
         codec_encode,
         response_codec_decode,
         execution_options,
+        application_execution_context,
     )
 }
 
@@ -2345,6 +2350,7 @@ fn execute_llm_call<'env>(
     codec_encode: Option<Callback>,
     response_codec_decode: Option<Callback>,
     execution_options: Option<ExecutionOptions>,
+    application_execution_context: Option<ApplicationExecutionContext>,
 ) -> Result<PromiseRaw<'env, Json>> {
     let execution_options = execution_options.map(Into::into).unwrap_or_default();
     let attrs = LlmAttributes::from_bits_truncate(attributes.unwrap_or(0));
@@ -2368,9 +2374,12 @@ fn execute_llm_call<'env>(
                 .codec_opt(codec)
                 .response_codec_opt(response_codec)
                 .build();
-            Box::pin(core_llm_api::llm_call_execute(params))
-                .await
-                .map_err(Error::from)
+            Box::pin(core_llm_api::llm_call_execute_with_context(
+                params,
+                application_execution_context,
+            ))
+            .await
+            .map_err(Error::from)
         }),
         js_value,
     )
@@ -2409,7 +2418,11 @@ pub fn llm_call_execute_async<'env>(
         Callback,
     >,
     execution_options: Option<ExecutionOptions>,
+    #[napi(ts_arg_type = "ApplicationExecutionContext | null")] execution_context: Option<
+        Unknown<'env>,
+    >,
 ) -> Result<PromiseRaw<'env, Json>> {
+    let application_execution_context = execution_context_json(execution_context)?;
     let request: LlmRequest = parse_json(request.0, "LlmRequest")?;
     let pa_fn = Arc::new(PromiseAwareFn::new(env, &func)?);
     let func: LlmExecutionNextFn = Arc::new(move |request| {
@@ -2434,6 +2447,7 @@ pub fn llm_call_execute_async<'env>(
         codec_encode,
         response_codec_decode,
         execution_options,
+        application_execution_context,
     )
 }
 
@@ -2488,7 +2502,11 @@ pub fn llm_stream_call_execute<'env>(
         Callback,
     >,
     execution_options: Option<ExecutionOptions>,
+    #[napi(ts_arg_type = "ApplicationExecutionContext | null")] execution_context: Option<
+        Unknown<'env>,
+    >,
 ) -> Result<PromiseRaw<'env, LlmStream>> {
+    let application_execution_context = execution_context_json(execution_context)?;
     let execution_options = execution_options.map(Into::into).unwrap_or_default();
     let attrs = LlmAttributes::from_bits_truncate(attributes.unwrap_or(0));
     let context = CallContext::capture(env)?;
@@ -2533,9 +2551,12 @@ pub fn llm_stream_call_execute<'env>(
                 .codec_opt(codec)
                 .response_codec_opt(response_codec)
                 .build();
-            let rust_stream = Box::pin(core_llm_api::llm_stream_call_execute(params))
-                .await
-                .map_err(Error::from)?;
+            let rust_stream = Box::pin(core_llm_api::llm_stream_call_execute_with_context(
+                params,
+                application_execution_context,
+            ))
+            .await
+            .map_err(Error::from)?;
             Ok::<_, Error>(LlmStream::new(
                 rust_stream,
                 finalizer_error,

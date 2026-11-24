@@ -219,9 +219,17 @@ The execution-intercept callback receives the object as `execution_context`
 in its context JSON. Its `next` callback accepts only business arguments;
 changing those arguments does not replace execution context.
 
+For managed LLM calls, pass the same `execution_context_json` argument
+immediately before cancellation on `nemo_relay_llm_call_execute` or
+`nemo_relay_llm_stream_call_execute`. Unary and streaming execution intercepts
+read the optional string from `NemoRelayLlmExecutionContext.execution_context_json`.
+The string is borrowed through the callback. Copy it in the callback if you
+need it afterward.
+
 A null pointer omits context, while `"{}"` supplies an empty object. JSON null,
 non-object values, malformed JSON, values larger than 16 KiB serialized JSON,
-and nesting deeper than 64 containers fail before middleware or tool execution.
+and nesting deeper than 64 containers fail before middleware, the tool callback,
+or the model provider runs.
 The root object counts as the first container. Relay releases callback data
 even when validation fails. Pass a null context pointer for calls without
 application context. Rebuild C consumers against the matching generated header

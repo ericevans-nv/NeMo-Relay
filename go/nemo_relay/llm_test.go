@@ -829,6 +829,190 @@ func TestLlmExecutionInterceptRegisterDeregister(t *testing.T) {
 	}
 }
 
+func TestLlmApplicationExecutionContextSnapshotsUnaryAndStreamCalls(t *testing.T) {
+	for _, mode := range []string{"unary", "stream"} {
+		t.Run(mode, func(t *testing.T) {
+			var observedLock sync.Mutex
+			var beforeMutation, afterMutation []string
+			capture := func(context LLMExecutionContext, mutate bool) {
+				snapshot := string(executionContextJSON(context.ExecutionContext))
+				observedLock.Lock()
+				defer observedLock.Unlock()
+				if mutate {
+					beforeMutation = append(beforeMutation, snapshot)
+					if context.ExecutionContext != nil {
+						if marker := context.ExecutionContext.Data["marker"]; len(marker) > 0 {
+							marker[0] = '!'
+						}
+					}
+					return
+				}
+				afterMutation = append(afterMutation, snapshot)
+			}
+			for index, modifier := range []string{"mutate", "observe"} {
+				registration := "llm-application-context-" + modifier
+				priority := int32(index + 1)
+				if mode == "stream" {
+					err := RegisterLlmStreamExecutionIntercept(registration, priority,
+						func(request json.RawMessage, context LLMExecutionContext, next func(json.RawMessage) (LLMStreamSource, error)) (LLMStreamSource, error) {
+							capture(context, modifier == "mutate")
+							return next(request)
+						})
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = DeregisterLlmStreamExecutionIntercept(registration) })
+				} else {
+					err := RegisterLlmExecutionIntercept(registration, priority,
+						func(request json.RawMessage, context LLMExecutionContext, next func(json.RawMessage) (json.RawMessage, error)) (json.RawMessage, error) {
+							capture(context, modifier == "mutate")
+							return next(request)
+						})
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = DeregisterLlmExecutionIntercept(registration) })
+				}
+			}
+
+			marker := json.RawMessage(`"middleware-only"`)
+			supplied := &ApplicationExecutionContext{Data: map[string]json.RawMessage{"marker": marker}}
+			snapshot := WithLLMApplicationExecutionContext(supplied)
+			marker[0] = '!'
+			provider := func(request json.RawMessage) (json.RawMessage, error) {
+				if strings.Contains(string(request), "middleware-only") {
+					return nil, errors.New("application marker reached provider request")
+				}
+				return json.RawMessage(`{"ok":true}`), nil
+			}
+			request := requestForTest(makeRequest())
+			for index, testCase := range []struct {
+				option LLMCallOption
+				want   string
+			}{
+				{snapshot, `{"data":{"marker":"middleware-only"}}`},
+				{nil, ""},
+				{WithLLMApplicationExecutionContext(nil), ""},
+				{WithLLMApplicationExecutionContext(&ApplicationExecutionContext{}), "{}"},
+				{WithLLMApplicationExecutionContext(&ApplicationExecutionContext{Data: map[string]json.RawMessage{}}), `{"data":{}}`},
+				{snapshot, `{"data":{"marker":"middleware-only"}}`},
+			} {
+				var options []LLMCallOption
+				if testCase.option != nil {
+					options = append(options, testCase.option)
+				}
+				if mode == "stream" {
+					var finalized atomic.Int32
+					source := &contractSource{}
+					open := func(_ context.Context, request json.RawMessage) (LLMStreamSource, error) {
+						chunk, err := provider(request)
+						if err != nil {
+							return nil, err
+						}
+						source.chunks = []json.RawMessage{chunk, json.RawMessage(`{"unread":true}`)}
+						return source, nil
+					}
+					stream, err := LlmStreamCallExecute("llm-application-context", request, open, nil, func() (json.RawMessage, error) {
+						finalized.Add(1)
+						return json.RawMessage(`null`), nil
+					}, options...)
+					if err != nil {
+						t.Fatal(err)
+					}
+					chunk, readError := stream.Next()
+					closeError := stream.Close()
+					if readError != nil || closeError != nil || string(chunk) != `{"ok":true}` {
+						t.Fatalf("stream returned %s, read error %v, close error %v", chunk, readError, closeError)
+					}
+					if calls := source.closed.Load(); calls != 1 {
+						t.Fatalf("provider stream closed %d times, want exactly one", calls)
+					}
+					if calls := finalized.Load(); calls != 1 {
+						t.Fatalf("stream close finalized %d times, want exactly one", calls)
+					}
+					if _, err := stream.Next(); !errors.Is(err, io.EOF) {
+						t.Fatalf("unexpected read after close: %v", err)
+					}
+				} else if response, err := LlmCallExecute("llm-application-context", request, provider, options...); err != nil || string(response) != `{"ok":true}` {
+					t.Fatalf("unary returned %s, %v", response, err)
+				}
+				observedLock.Lock()
+				matchesContext := len(beforeMutation) == index+1 && len(afterMutation) == index+1 &&
+					beforeMutation[index] == testCase.want && afterMutation[index] == testCase.want
+				if !matchesContext {
+					t.Errorf("call %d observed %q before and %q after mutation, want %q", index, beforeMutation, afterMutation, testCase.want)
+				}
+				observedLock.Unlock()
+				if !matchesContext {
+					t.FailNow()
+				}
+			}
+		})
+	}
+}
+
+func TestLlmApplicationExecutionContextRejectedBeforeExecution(t *testing.T) {
+	const name = "llm-invalid-application-context"
+	request := requestForTest(makeRequest())
+	var guardrailCalls, providerCalls atomic.Int32
+	if err := RegisterLlmConditionalExecutionGuardrail(name, 1, func(json.RawMessage, json.RawMessage) *string {
+		guardrailCalls.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = DeregisterLlmConditionalExecutionGuardrail(name) })
+
+	provider := LLMExecutionFunc(func(json.RawMessage) (json.RawMessage, error) {
+		providerCalls.Add(1)
+		return json.RawMessage(`{"ok":true}`), nil
+	})
+	for _, testCase := range []struct {
+		name  string
+		value json.RawMessage
+		want  string
+	}{
+		{"size", json.RawMessage(`"` + strings.Repeat("x", 16*1024) + `"`), "16384 serialized bytes"},
+		{"depth", json.RawMessage(strings.Repeat("[", 63) + "0" + strings.Repeat("]", 63)), "64 container levels"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			option := WithLLMApplicationExecutionContext(&ApplicationExecutionContext{
+				Data: map[string]json.RawMessage{"marker": testCase.value},
+			})
+			if _, err := LlmCallExecute(name, request, provider, option); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("unexpected unary context error: %v", err)
+			}
+			if stream, err := LlmStreamCallExecute(name, request, provider.AsStream(), nil, nil, option); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				if stream != nil {
+					_ = stream.Close()
+				}
+				t.Fatalf("unexpected streaming context error: %v", err)
+			}
+		})
+	}
+	if guardrails, providers := guardrailCalls.Load(), providerCalls.Load(); guardrails != 0 || providers != 0 {
+		t.Fatalf("invalid context reached %d guardrail calls and %d provider calls", guardrails, providers)
+	}
+}
+
+func TestLlmApplicationExecutionContextRejectedForManualLifecycle(t *testing.T) {
+	validOption := WithLLMApplicationExecutionContext(&ApplicationExecutionContext{})
+	request := requestForTest(makeRequest())
+	if _, err := LlmCall("llm-application-context-manual", request, validOption); err == nil {
+		t.Fatal("manual start accepted an application context option")
+	}
+	handle, err := LlmCall("llm-application-context-manual", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := LlmCallEnd(handle, json.RawMessage(`null`), validOption); err == nil {
+		t.Error("manual end accepted an application context option")
+	}
+	if err := LlmCallEnd(handle, json.RawMessage(`null`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func resolveDirectionalExecutionTestCodecs(context LLMExecutionContext) (*LLMRequestSanitizeCodec, *LLMResponseSanitizeCodec, error) {
 	if context.RequestCodec.Codec.CodecKind != LLMCodecOpaque {
 		return nil, nil, fmt.Errorf("unexpected request codec identity: %#v", context.RequestCodec.Codec)

@@ -50,6 +50,27 @@ provider invocation with Execute. Pass the active scope handle and a stable
 Add a response codec afterward when subscribers or exporters need normalized
 response usage, tool calls, or cost annotations.
 
+To pass invocation-local application data to an execution intercept, supply an
+[Application Execution Context](/instrument-applications/advanced-guide#application-execution-context)
+when starting a managed call. The intercept receives the envelope separately
+from the provider request and alongside its codec access.
+
+- **Rust.** Pass `Some(context)` after the call params to
+  `llm_call_execute_with_context` or `llm_stream_call_execute_with_context`.
+  Read it with `context.execution_context()`.
+- **Python.** Pass `execution_context` to `llm.execute`,
+  `llm.stream_execute`, or their typed counterparts. Read
+  `context.execution_context`.
+- **Node.js.** Use `executionContext` in typed execute options or as the final
+  argument to the managed execute functions. Read `context.executionContext`.
+- **Go.** Use `WithLLMApplicationExecutionContext` with `LlmCallExecute` or
+  `LlmStreamCallExecute`. The unary and stream-source intercepts read their
+  copies from `context.ExecutionContext`.
+- **C.** Pass `execution_context_json` before cancellation on
+  `nemo_relay_llm_call_execute` or `nemo_relay_llm_stream_call_execute`.
+  Read the string from `context.execution_context_json`. The string is
+  borrowed for the callback. Copy it there if you need it afterward.
+
 </Step>
 
 <Step title="Run" id="minimal-example">

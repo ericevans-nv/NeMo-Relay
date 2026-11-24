@@ -1378,8 +1378,9 @@ fn llm_call_end(
     model_name: "str | None"=None,
     codec: "object | None"=None,
     response_codec: "object | None"=None,
-    execution_options: "ExecutionOptions | None"=None
-) -> "object", text_signature = "(name: str, request: LlmRequest, func: object, *, handle: ScopeHandle | None = None, attributes: LlmAttributes | None = None, data: object | None = None, metadata: object | None = None, model_name: str | None = None, codec: object | None = None, response_codec: object | None = None, execution_options: ExecutionOptions | None = None) -> object")]
+    execution_options: "ExecutionOptions | None"=None,
+    execution_context: "ApplicationExecutionContext | None"=None
+) -> "object", text_signature = "(name: str, request: LlmRequest, func: object, *, handle: ScopeHandle | None = None, attributes: LlmAttributes | None = None, data: object | None = None, metadata: object | None = None, model_name: str | None = None, codec: object | None = None, response_codec: object | None = None, execution_options: ExecutionOptions | None = None, execution_context: ApplicationExecutionContext | None = None) -> object")]
 #[allow(clippy::too_many_arguments)]
 fn llm_call_execute<'py>(
     py: Python<'py>,
@@ -1394,7 +1395,9 @@ fn llm_call_execute<'py>(
     codec: Option<&Bound<'py, PyAny>>,
     response_codec: Option<&Bound<'py, PyAny>>,
     execution_options: Option<PyExecutionOptions>,
+    execution_context: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
+    let application_execution_context = py_application_execution_context(execution_context)?;
     let execution_options = execution_options.map(Into::into).unwrap_or_default();
     let attrs = attributes
         .map(|a| a.inner)
@@ -1431,9 +1434,12 @@ fn llm_call_execute<'py>(
                         .build();
                     // Box the core future on Tokio's thread so the Python entry
                     // point does not construct its large state on the caller's stack.
-                    let result = Box::pin(core_llm_api::llm_call_execute(params))
-                        .await
-                        .map_err(flow_error_to_py_err)?;
+                    let result = Box::pin(core_llm_api::llm_call_execute_with_context(
+                        params,
+                        application_execution_context,
+                    ))
+                    .await
+                    .map_err(flow_error_to_py_err)?;
                     Python::attach(|py| json_to_py(py, &result))
                 }),
             ),
@@ -1491,8 +1497,9 @@ fn llm_call_execute<'py>(
     model_name: "str | None"=None,
     codec: "object | None"=None,
     response_codec: "object | None"=None,
-    execution_options: "ExecutionOptions | None"=None
-) -> "object", text_signature = "(name: str, request: LlmRequest, func: object, collector: object, finalizer: object, *, handle: ScopeHandle | None = None, attributes: LlmAttributes | None = None, data: object | None = None, metadata: object | None = None, model_name: str | None = None, codec: object | None = None, response_codec: object | None = None, execution_options: ExecutionOptions | None = None) -> object")]
+    execution_options: "ExecutionOptions | None"=None,
+    execution_context: "ApplicationExecutionContext | None"=None
+) -> "object", text_signature = "(name: str, request: LlmRequest, func: object, collector: object, finalizer: object, *, handle: ScopeHandle | None = None, attributes: LlmAttributes | None = None, data: object | None = None, metadata: object | None = None, model_name: str | None = None, codec: object | None = None, response_codec: object | None = None, execution_options: ExecutionOptions | None = None, execution_context: ApplicationExecutionContext | None = None) -> object")]
 #[allow(clippy::too_many_arguments)]
 fn llm_stream_call_execute<'py>(
     py: Python<'py>,
@@ -1509,7 +1516,9 @@ fn llm_stream_call_execute<'py>(
     codec: Option<&Bound<'py, PyAny>>,
     response_codec: Option<&Bound<'py, PyAny>>,
     execution_options: Option<PyExecutionOptions>,
+    execution_context: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
+    let application_execution_context = py_application_execution_context(execution_context)?;
     let execution_options = execution_options.map(Into::into).unwrap_or_default();
     let attrs = attributes
         .map(|a| a.inner)
@@ -1555,7 +1564,11 @@ fn llm_stream_call_execute<'py>(
                         // Keep the large core future out of the bridge future constructed
                         // on Python's thread (musl thread stacks can be only 128 KiB).
                         // Construct and box it here when Tokio polls the bridge instead.
-                        let rust_stream = Box::pin(core_llm_api::llm_stream_call_execute(params))
+                        let rust_stream =
+                            Box::pin(core_llm_api::llm_stream_call_execute_with_context(
+                                params,
+                                application_execution_context,
+                            ))
                             .await
                             .map_err(flow_error_to_py_err)?;
 

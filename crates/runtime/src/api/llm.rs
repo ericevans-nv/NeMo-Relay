@@ -56,6 +56,7 @@ use nemo_relay_types::codec::traits::{LlmCodec, LlmResponseCodec};
 pub use nemo_relay_types::api::llm::{
     LLM_REQUEST_INTERCEPT_OUTCOME_SCHEMA, LlmAttributes, LlmRequest, LlmRequestInterceptOutcome,
 };
+pub use nemo_relay_types::api::tool::ApplicationExecutionContext;
 
 const OBSERVABILITY_CREDENTIAL_HEADERS: [&str; 7] = [
     "authorization",
@@ -1694,6 +1695,18 @@ impl Drop for ManagedLlmCompletion {
 /// Response codecs enrich observability output only and do not change the
 /// value returned to the caller.
 pub async fn llm_call_execute(params: LlmCallExecuteParams) -> Result<Json> {
+    llm_call_execute_with_context(params, None).await
+}
+
+/// Execute a managed LLM call with optional application context for its interceptors.
+///
+/// Relay validates the envelope before middleware, events, or provider execution.
+/// Context is carried separately from the request, handle data, and event metadata.
+pub async fn llm_call_execute_with_context(
+    params: LlmCallExecuteParams,
+    application_execution_context: Option<ApplicationExecutionContext>,
+) -> Result<Json> {
+    validate_application_execution_context(application_execution_context.as_ref())?;
     let LlmCallExecuteParams {
         name,
         request,
@@ -1822,7 +1835,8 @@ pub async fn llm_call_execute(params: LlmCallExecuteParams) -> Result<Json> {
     let execution_name = name.clone();
     let event_uuid = handle.uuid;
     let execution_context =
-        LlmExecutionContext::for_non_streaming(request_codec, response_codec.clone());
+        LlmExecutionContext::for_non_streaming(request_codec, response_codec.clone())
+            .with_application_execution_context(application_execution_context);
     let execution = with_active_event_trace_context(
         event_uuid,
         Some(active_trace_context),
@@ -1934,7 +1948,29 @@ pub async fn llm_call_execute(params: LlmCallExecuteParams) -> Result<Json> {
 /// The returned stream emits chunk-level results while the runtime defers the
 /// LLM-end event until the collector and finalizer complete.
 pub async fn llm_stream_call_execute(params: LlmStreamCallExecuteParams) -> Result<LlmJsonStream> {
-    llm_stream_call_execute_inner(params, None).await
+    llm_stream_call_execute_with_context(params, None).await
+}
+
+/// Execute a managed LLM stream with optional application context for its interceptors.
+///
+/// Context follows the same validation and visibility rules as
+/// [`llm_call_execute_with_context`].
+pub async fn llm_stream_call_execute_with_context(
+    params: LlmStreamCallExecuteParams,
+    application_execution_context: Option<ApplicationExecutionContext>,
+) -> Result<LlmJsonStream> {
+    llm_stream_call_execute_inner(params, application_execution_context, None).await
+}
+
+fn validate_application_execution_context(
+    application_execution_context: Option<&ApplicationExecutionContext>,
+) -> Result<()> {
+    if let Some(context) = application_execution_context {
+        context
+            .validate()
+            .map_err(|error| FlowError::InvalidArgument(error.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Internal gateway support. This module has no compatibility guarantee.
@@ -1950,14 +1986,16 @@ pub mod gateway {
         params: LlmStreamCallExecuteParams,
         completion: ResponseCompletionFn,
     ) -> Result<LlmJsonStream> {
-        super::llm_stream_call_execute_inner(params, Some(completion)).await
+        super::llm_stream_call_execute_inner(params, None, Some(completion)).await
     }
 }
 
 async fn llm_stream_call_execute_inner(
     params: LlmStreamCallExecuteParams,
+    application_execution_context: Option<ApplicationExecutionContext>,
     response_completion: Option<crate::api::runtime::callbacks::LlmStreamResponseCompletionFn>,
 ) -> Result<LlmJsonStream> {
+    validate_application_execution_context(application_execution_context.as_ref())?;
     let LlmStreamCallExecuteParams {
         name,
         request,
@@ -2089,7 +2127,8 @@ async fn llm_stream_call_execute_inner(
     let execution_name = name.clone();
     let event_uuid = handle.uuid;
     let stream_started_at = Instant::now();
-    let execution_context = LlmExecutionContext::for_streaming(request_codec);
+    let execution_context = LlmExecutionContext::for_streaming(request_codec)
+        .with_application_execution_context(application_execution_context);
     let execution = with_active_event_trace_context(
         event_uuid,
         Some(active_trace_context),

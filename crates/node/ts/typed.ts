@@ -90,6 +90,8 @@ export interface TypedLlmExecuteOptions<
   codec?: LlmCodec<TAnnotated, TEncoded> | null;
   responseCodec?: LlmResponseCodec<TDecodedResponse> | null;
   executionOptions?: ExecutionOptions | null;
+  /** Application context for execution intercepts, separate from provider and event data. */
+  executionContext?: ApplicationExecutionContext | null;
 }
 
 /** Options for `typedLlmStreamExecute`. */
@@ -108,6 +110,8 @@ export interface TypedLlmStreamExecuteOptions<
   codec?: LlmCodec<TAnnotated, TEncoded> | null;
   responseCodec?: LlmResponseCodec<TDecodedResponse> | null;
   executionOptions?: ExecutionOptions | null;
+  /** Application context for execution intercepts, separate from provider and event data. */
+  executionContext?: ApplicationExecutionContext | null;
 }
 
 interface EncodedToolExecutionResult<TResultJson> {
@@ -224,6 +228,7 @@ export async function typedLlmExecute<
     codec == null ? undefined : ({ annotated, original }) => codec.encode(annotated, original),
     eventCodec == null ? undefined : (response: Json) => eventCodec.decodeResponse(response),
     options.executionOptions,
+    options.executionContext,
   );
   return responseCodec.fromJson(jsonResult);
 }
@@ -300,5 +305,6 @@ export function typedLlmStreamExecute<
     codec == null ? undefined : ({ annotated, original }) => codec.encode(annotated, original),
     eventCodec == null ? undefined : (response: Json) => eventCodec.decodeResponse(response),
     options.executionOptions,
+    options.executionContext,
   );
 }

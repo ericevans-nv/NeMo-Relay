@@ -20,7 +20,7 @@ use nemo_relay_plugin_host::{PluginComponentSpec, PluginConfig, list_plugin_kind
 use nemo_relay_runtime::api::event::{Event, ScopeCategory};
 use nemo_relay_runtime::api::llm::{
     LlmCallExecuteParams, LlmRequest, LlmStreamCallExecuteParams, llm_call_execute,
-    llm_stream_call_execute,
+    llm_call_execute_with_context, llm_stream_call_execute, llm_stream_call_execute_with_context,
 };
 use nemo_relay_runtime::api::runtime::LlmCodecIdentity;
 use nemo_relay_runtime::api::runtime::{LlmJsonStream, TASK_SCOPE_STACK, create_scope_stack};
@@ -888,7 +888,9 @@ async fn rust_worker_registers_and_invokes_all_current_surfaces() {
     assert!(tool_mark.timestamp() > tool_end.timestamp());
     assert_eq!(tool_mark.metadata().unwrap()["worker_plugin_mark"], true);
 
-    let llm_execute_response = llm_call_execute(
+    let application_context =
+        json!({"data": {"fixture_marker": "worker-only", "integer": u64::MAX}});
+    let llm_execute_response = llm_call_execute_with_context(
         LlmCallExecuteParams::builder()
             .name("worker-fixture-llm-execute")
             .request(LlmRequest {
@@ -905,6 +907,7 @@ async fn rust_worker_registers_and_invokes_all_current_surfaces() {
                 })
             }))
             .build(),
+        Some(application_context.clone().try_into().unwrap()),
     )
     .await
     .expect("worker LLM middleware should run");
@@ -913,6 +916,12 @@ async fn rust_worker_registers_and_invokes_all_current_surfaces() {
     assert_eq!(
         llm_execute_response["request"]["worker_plugin_llm_execution_request"],
         true
+    );
+    assert_eq!(llm_execute_response["fixture_context"], application_context);
+    assert!(
+        !llm_execute_response["request"]
+            .to_string()
+            .contains("worker-only")
     );
     flush_subscribers().expect("worker fixture LLM events should flush");
     let captured_events = events.lock().unwrap().clone();
@@ -955,7 +964,7 @@ async fn rust_worker_registers_and_invokes_all_current_surfaces() {
         true
     );
 
-    let stream_values = llm_stream_call_execute(
+    let stream_values = llm_stream_call_execute_with_context(
         LlmStreamCallExecuteParams::builder()
             .name("worker-fixture-llm-stream")
             .request(LlmRequest {
@@ -974,6 +983,7 @@ async fn rust_worker_registers_and_invokes_all_current_surfaces() {
             .collector(Box::new(|_chunk| Ok(())))
             .finalizer(Box::new(|| json!({ "done": true })))
             .build(),
+        Some(json!({}).try_into().unwrap()),
     )
     .await
     .expect("worker stream middleware should start")
@@ -989,6 +999,8 @@ async fn rust_worker_registers_and_invokes_all_current_surfaces() {
         stream_value["request"]["worker_plugin_llm_stream_execution_request"],
         true
     );
+    assert_eq!(stream_value["fixture_context"], json!({}));
+    assert!(stream_value["request"].get("execution_context").is_none());
     flush_subscribers().expect("worker fixture streaming events should flush");
     let captured_events = events.lock().unwrap().clone();
     let stream_start = find_event(

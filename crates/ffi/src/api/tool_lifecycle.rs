@@ -194,7 +194,7 @@ pub unsafe extern "C" fn nemo_relay_tool_call_end(
     }
 }
 
-fn parse_application_context(
+pub(super) fn parse_application_context(
     pointer: *const c_char,
 ) -> Result<Option<nemo_relay_types::api::tool::ApplicationExecutionContext>, NemoRelayStatus> {
     use nemo_relay_types::api::tool::ApplicationExecutionContext;

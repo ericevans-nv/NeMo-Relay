@@ -274,13 +274,13 @@ fn context_string(value: Unknown, remaining_string_bytes: &mut usize) -> Result<
     // are refused before even scanning their UTF-8 representation.
     if string.utf16_len()? > *remaining_string_bytes {
         return Err(Error::invalid_argument(
-            "tool execution context exceeds 16384 serialized bytes",
+            "application execution context exceeds 16384 serialized bytes",
         ));
     }
     *remaining_string_bytes = remaining_string_bytes
         .checked_sub(string.utf8_len()?)
         .ok_or_else(|| {
-            Error::invalid_argument("tool execution context exceeds 16384 serialized bytes")
+            Error::invalid_argument("application execution context exceeds 16384 serialized bytes")
         })?;
     Ok(string.into_utf8()?.into_owned()?)
 }
